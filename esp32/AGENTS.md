@@ -227,7 +227,7 @@ flash size and status backend.
    | `top` | Waveshare ESP32-S3-Touch-AMOLED-1.75C |
    | `bottom right` | AIPI Lite |
    | `wheel` | Seeed SenseCAP Watcher |
-   | `boot` | Waveshare ESP32-C6-Touch-AMOLED-1.8, ESP32-S3-Touch-AMOLED-1.75 or ESP32-S3-Touch-LCD-1.85C — tell the C6 by its target (`esp32c6`), and the two S3 boards by the 1.85C's `board V1` or `board V2` line at boot |
+   | `boot` | Waveshare ESP32-C6-Touch-AMOLED-1.8, ESP32-S3-Touch-AMOLED-1.75 or ESP32-S3-Touch-LCD-1.85C. Tell the C6 by its target (`esp32c6`), and the two S3 boards by the 1.85C's `board V1` or `board V2` line at boot |
 
 Ask the user only when these come up empty or contradict each other, and say
 what you found and what's ambiguous rather than asking from scratch.

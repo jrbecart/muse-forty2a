@@ -14,7 +14,15 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Muse Gadgets — forty2a edition
+# Muse Gadgets: forty2a edition
+
+<p align="center">
+  <a href="https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm">
+    <img src="https://www.waveshare.com/media/catalog/product/cache/1/image/560x560/9df78eab33525d08d6e5fb8d27136e95/e/s/esp32-s3-touch-lcd-1.85c-1.jpg" width="320" alt="Waveshare ESP32-S3-Touch-LCD-1.85C, a round 1.85 inch touch screen">
+  </a>
+  <br>
+  <sub>Waveshare ESP32-S3-Touch-LCD-1.85C. Photo: <a href="https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm">Waveshare</a></sub>
+</p>
 
 > **The first autonomous (battery-powered) Muse gadget port for the
 > [Waveshare ESP32-S3-Touch-LCD-1.85C](https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm),
