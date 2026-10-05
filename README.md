@@ -24,6 +24,13 @@ limitations under the License.
   <sub>Waveshare ESP32-S3-Touch-LCD-1.85C. Photo: <a href="https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm">Waveshare</a></sub>
 </p>
 
+<p align="center">
+  <img src=".github/images/forty2a-lcd-185c-idle.png" width="300" alt="Muse running on the 1.85C: the avatar idle, ready for push-to-talk">
+  <img src=".github/images/forty2a-lcd-185c-happy.png" width="300" alt="Muse running on the 1.85C: the avatar happy after a tap">
+  <br>
+  <sub>Screenshots taken from the board's own screen: Muse ready, and happy after a tap.</sub>
+</p>
+
 > **The first autonomous (battery-powered) Muse gadget port for the
 > [Waveshare ESP32-S3-Touch-LCD-1.85C](https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm),
 > released on GitHub.** Brought to you by **[forty2a](https://forty2a.com)**.
