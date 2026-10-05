@@ -63,7 +63,7 @@ typedef struct {
     float diagonal_in;      /* screen size; under 2" typing uses a keypad with bigger keys */
     bool keyboard;          /* dedicated menu navigation keys */
     const char *talk_button;    /* where the buttons are, for captions: "top" */
-    const char *aux_button;     /* "bottom" */
+    const char *aux_button;     /* "bottom"; NULL: there is none */
     muse_button_hint_t talk_hint;   /* mic icon; the menu's hints follow both */
     muse_button_hint_t aux_hint;    /* power or menu icon; left out, there's none */
     int frame_ms;           /* face animation period */

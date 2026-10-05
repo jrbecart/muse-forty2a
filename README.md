@@ -14,7 +14,39 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Muse Gadgets
+# Muse Gadgets — forty2a edition
+
+> **The first autonomous (battery-powered) Muse gadget port for the
+> [Waveshare ESP32-S3-Touch-LCD-1.85C](https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm),
+> released on GitHub.** Brought to you by **[forty2a](https://forty2a.com)**.
+
+This is a fork of Meta's
+[muse-gadget-sdk](https://github.com/facebookincubator/muse-gadget-sdk) that
+adds the Waveshare ESP32-S3-Touch-LCD-1.85C, a round 1.85" 360×360 touch
+screen with a speaker, mic and battery, as a full Muse gadget:
+
+- Avatar UI, touch settings and push-to-talk on the BOOT button
+- Runs on its own battery, with the level on screen, screen sleep and deep-sleep power off
+- Both hardware revisions, detected at boot: V1 (PCM5101 DAC + I2S mic) and V2 (ES8311 + ES7210)
+- Replies from Muse show on screen as text
+- **Spoken replies (TTS): coming soon**
+
+Build and flash it from `esp32/` with ESP-IDF v6.0.1:
+
+```sh
+tools/muse/board.sh build lcd185c
+tools/muse/board.sh flash lcd185c
+```
+
+Set your SDK token first (see [`esp32/AGENTS.md`](esp32/AGENTS.md#build)).
+Board details are in [`esp32/devices/README.md`](esp32/devices/README.md).
+
+**Credits:** Waveshare ESP32-S3-Touch-LCD-1.85C port by
+[forty2a](https://forty2a.com). The Muse Gadget SDK itself is by Meta
+Platforms, Inc. and its contributors, under the Apache License 2.0 (see
+[License](#license)).
+
+---
 
 <p align="center">
   <picture>
