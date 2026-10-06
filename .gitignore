@@ -24,3 +24,7 @@ muse-simulator.ppm
 # Local gadget provisioning and original-device flash backups.
 .sdk-token
 /backups/
+
+# Local only: Claude Code notes and the SDK token
+CLAUDE.md
+.env
