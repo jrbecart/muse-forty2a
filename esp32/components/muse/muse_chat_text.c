@@ -53,6 +53,48 @@ void muse_hatch_wav_header(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate)
     put_le(h + 40, UINT32_MAX, 4);
 }
 
+static uint32_t get_le(const uint8_t *p, int n)
+{
+    uint32_t v = 0;
+    for (int i = n - 1; i >= 0; i--) {
+        v = v << 8 | p[i];
+    }
+    return v;
+}
+
+size_t muse_hatch_wav_parse(const uint8_t *p, size_t len, int *rate, int *channels)
+{
+    if (len < 12) {
+        return 0;
+    }
+    if (memcmp(p, "RIFF", 4) || memcmp(p + 8, "WAVE", 4)) {
+        return SIZE_MAX;
+    }
+    *rate = 0;
+    size_t off = 12;
+    while (off + 8 <= len) {
+        uint32_t size = get_le(p + off + 4, 4);
+        if (!memcmp(p + off, "fmt ", 4)) {
+            if (off + 8 + 16 > len) {
+                return 0;
+            }
+            int format = (int)get_le(p + off + 8, 2), bits = (int)get_le(p + off + 22, 2);
+            *channels = (int)get_le(p + off + 10, 2);
+            *rate = (int)get_le(p + off + 12, 4);
+            if (format != 1 || bits != 16 || *channels < 1 || *channels > 2 || *rate < 8000 || *rate > 48000) {
+                return SIZE_MAX;
+            }
+        } else if (!memcmp(p + off, "data", 4)) {
+            return *rate ? off + 8 : SIZE_MAX;
+        }
+        if (size > 4096) {
+            return SIZE_MAX;   /* chunks before the samples are small */
+        }
+        off += 8 + size + (size & 1);
+    }
+    return 0;
+}
+
 size_t muse_hatch_base64(const uint8_t *in, size_t n, char *out)
 {
     static const char A[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -168,6 +210,56 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap)
         o += snprintf(out + o, cap - o, "%s%.*s", o ? "\n" : "", (int)len, start);
     }
     return true;
+}
+
+/*
+ * Reply text as it should be heard: Markdown's marks go (emphasis, headings,
+ * code ticks), a link says its text, a bare URL says "a link", and runs of
+ * spaces close up. Returns the length put in out.
+ */
+size_t muse_hatch_speakable(const char *text, char *out, size_t cap)
+{
+    size_t o = 0;
+    const char *p = text;
+    while (*p && o + 1 < cap) {
+        if (*p == '[') {
+            /* [text](url): the text */
+            const char *close = strchr(p, ']');
+            if (close && close[1] == '(' && strchr(close, ')')) {
+                for (const char *q = p + 1; q < close && o + 1 < cap; q++) {
+                    out[o++] = *q;
+                }
+                p = strchr(close, ')') + 1;
+                continue;
+            }
+        }
+        if (!strncmp(p, "http://", 7) || !strncmp(p, "https://", 8)) {
+            static const char LINK[] = "a link";
+            for (size_t i = 0; LINK[i] && o + 1 < cap; i++) {
+                out[o++] = LINK[i];
+            }
+            while (*p && *p != ' ' && *p != '\n') {
+                p++;
+            }
+            continue;
+        }
+        char c = *p++;
+        if (c == '*' || c == '`' || c == '#' || c == '~') {
+            continue;
+        }
+        if (c == '_' || c == '\t') {
+            c = ' ';
+        }
+        if (c == ' ' && (!o || out[o - 1] == ' ' || out[o - 1] == '\n')) {
+            continue;
+        }
+        out[o++] = c;
+    }
+    while (o && (out[o - 1] == ' ' || out[o - 1] == '\n')) {
+        o--;
+    }
+    out[o] = '\0';
+    return o;
 }
 
 /* ---- Typed turns on the serial console ---- */

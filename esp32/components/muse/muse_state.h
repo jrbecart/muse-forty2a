@@ -68,6 +68,27 @@ bool muse_state_caption(char *out, size_t out_len, uint32_t *version);
 void muse_state_set_page(int cols, int lines);
 void muse_state_page(int *cols, int *lines);
 
+/* The reply while it's read (full layout): all its text, with stand-ins for
+ * what the font lacks (muse_text.h), and the byte in that where the speech
+ * has got to. Set by the voice task; an empty text clears it. */
+#define MUSE_REPLY_MAX (8 * 1024)
+void muse_state_set_reply(const char *text, size_t at);
+/* Copies the reply into out if it changed since *version (true then), and the
+ * speech's place in it into *at either way. */
+bool muse_state_reply(char *out, size_t cap, size_t *at, uint32_t *version);
+
+/* Reading a reply by touch: what the UI asks of the voice task. */
+typedef enum {
+    MUSE_READER_FOLLOW,   /* the screen follows the speech */
+    MUSE_READER_WAIT,     /* a finger down, or scrolled back: the speech waits */
+    MUSE_READER_SKIP,     /* scrolled ahead: the speech hurries after the screen */
+} muse_reader_t;
+void muse_state_set_reader(muse_reader_t reader);
+muse_reader_t muse_state_reader(void);
+/* A tap on the reply. The voice task takes it: true once per tap. */
+void muse_state_reader_tap(void);
+bool muse_state_reader_take_tap(void);
+
 void muse_state_set_power(const muse_power_t *power);
 muse_power_t muse_state_power(void);
 /* A battery and no USB power (charger or computer). Power saving asleep (the

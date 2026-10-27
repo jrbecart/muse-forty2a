@@ -26,8 +26,9 @@
  *   2. POST /chat/stream with the transcript. The reply arrives as events on
  *      the connection's long-lived POST /chat/subscribe stream: one or more
  *      assistant messages, each delta.message_start / text_append / message_done.
- *   3. Each finished message is shown at reading pace (see start_tts to
- *      speak it with a TTS API of your own; Muse doesn't speak gadget replies).
+ *   3. Each finished message is spoken by the TTS service set in Kconfig
+ *      (muse_tts.c) with the speaker on, or else shown at reading pace: Muse
+ *      doesn't speak gadget replies itself.
  * A turn has no explicit end event; like Sidekick, it settles once every
  * message is done and nothing has arrived for a few seconds.
  *
@@ -69,6 +70,7 @@ extern "C" {
 #include "muse_account_api.h"
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_tts.h"
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
@@ -100,8 +102,13 @@ static const char *TAG = "muse_chat_session";
 #define EV_TEXT 72
 #define TEXT_MAX 1024                      /* a message's text, for captions timed to its speech */
 #define SPEECH_CHARS_PER_S 14              /* until the speech's length is known */
-#define TEXT_CHARS_PER_S 16                /* speaker off: reading pace, a little over speech */
+#define TEXT_CHARS_PER_S 11                /* speaker off: reading pace, unhurried on a small round screen */
 #define TEXT_HOLD_S 2                      /* speaker off: how long a message's last lines stay up */
+#define PIECE_FIRST 120                    /* spoken reply: the first piece's most characters, so speech starts soon */
+#define PIECE_MAX 280                      /* and the others' */
+#define PIECE_MIN 24                       /* a sentence end sooner than this doesn't end a piece */
+#define PIECES 16                          /* pieces kept (a ring): those being fetched, played and captioned */
+#define PIECES_AHEAD 3                     /* most pieces fetched ahead of the one playing */
 
 #define PING_US (20 * 1000000LL)
 #define DEAD_US (60 * 1000000LL)           /* nothing from the server, pongs included */
@@ -194,6 +201,24 @@ enum phase_t : uint8_t { P_IDLE, P_LISTEN, P_WAIT_FINAL, P_WAIT_REPLY };
 
 enum tts_t : uint8_t { TTS_NONE, TTS_QUEUED, TTS_ACTIVE, TTS_FINISHED };
 
+enum audio_t : uint8_t { AUDIO_UNKNOWN, AUDIO_MP3, AUDIO_WAV };
+
+/* A piece of a spoken reply: a sentence or a few of one message's text, and its speech. */
+struct piece_t {
+    int8_t msg;
+    uint16_t start, end;     /* its bytes of the message's text */
+    uint32_t pcm_start;      /* where its speech starts in the reply audio */
+    uint32_t pcm_frames;     /* its length once it's all played; 0 until then */
+    uint32_t got;            /* audio bytes fetched */
+    uint32_t bytes;          /* of those, still in the buffer */
+    int rate;                /* WAV: its sample rate; MP3: its bitrate in kbps once known */
+    uint8_t channels;
+    audio_t audio;
+    bool fetched;            /* all its audio is in (or the request failed) */
+    bool silent;             /* no speech came: shown at reading pace instead */
+    bool started, done;
+};
+
 struct msg_t {
     char id[80];
     size_t len;              /* reply text length so far */
@@ -236,6 +261,15 @@ struct turn_t {
     /* TTS */
     int tts_msg;             /* message being fetched (or shown, speaker off), or -1 */
     bool silent;             /* speaker off: tts_msg is paced by silence, not fetched */
+    /* Spoken replies (muse_tts): the text goes out a piece at a time as it arrives. */
+    int8_t speak;            /* -1 until the reply's first message: whether to speak it */
+    piece_t pieces[PIECES];  /* by number % PIECES */
+    int npieces;             /* pieces made so far */
+    int play;                /* the piece playing (or next to) */
+    int fetch;               /* the piece being fetched while tts_id is set */
+    uint32_t tts_id;         /* its muse_tts request, or 0 */
+    int plan_msg;            /* where the next piece starts: which message */
+    uint16_t plan_at;        /* and which byte of its text */
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
     bool mp3_ended;
@@ -957,6 +991,10 @@ static void turn_finish(void)
     s_turn.tts_msg = -1;
     s_turn.silent = false;
     s_turn.mp3_len = 0;
+    if (s_turn.tts_id) {
+        muse_tts_cancel();
+        s_turn.tts_id = 0;
+    }
 }
 
 static void turn_fail(const char *why)
@@ -1000,6 +1038,7 @@ static bool turn_start(uint32_t gen, bool text)
     s_turn.gen = gen;
     s_turn.text = text;
     s_turn.tts_msg = -1;
+    s_turn.speak = -1;
     memset(s_marks, 0, sizeof(s_marks));
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
@@ -1312,6 +1351,9 @@ static int bind_msg(const char *id, cJSON *payload)
     msg_t &m = s_turn.msgs[s_turn.nmsgs];
     m = msg_t{};
     strlcpy(m.id, id, sizeof(m.id));
+    if (s_turn.texts) {
+        s_turn.texts[s_turn.nmsgs * TEXT_MAX] = '\0';   /* not the last turn's text while this one's is on its way */
+    }
     return s_turn.nmsgs++;
 }
 
@@ -1492,8 +1534,137 @@ static void on_chat_ack(stream_t *s)
 
 /* ---- Turn: speech ---- */
 
+static piece_t &piece(int n)
+{
+    return s_turn.pieces[n % PIECES];
+}
+
+/*
+ * Where the next piece of `text` from `at` should end: at the last sentence
+ * end within `limit` characters, or if there's none, at the last space before
+ * the limit once the text goes past it, or all the rest once the message is
+ * done. 0 to wait for more text.
+ */
+static size_t piece_end(const char *text, size_t len, size_t at, size_t limit, bool done)
+{
+    size_t most = at + limit < len ? at + limit : len;
+    if (done && most == len) {
+        return len;   /* the rest fits */
+    }
+    size_t sentence = 0, space = 0;
+    for (size_t k = at; k < most; k++) {
+        char c = text[k];
+        /* A full stop and then a space: not "3.5" or "e.g." mid-word, nor one more text may follow. */
+        bool gap = k + 1 < len && (text[k + 1] == ' ' || text[k + 1] == '\n');
+        if (k + 1 - at >= PIECE_MIN && (((c == '.' || c == '!' || c == '?') && gap) || c == '\n')) {
+            sentence = k + 1;
+        }
+        if (c == ' ') {
+            space = k;
+        }
+    }
+    if (sentence) {
+        return sentence;
+    }
+    if (most - at < limit) {
+        return 0;   /* the sentence hasn't ended yet */
+    }
+    size_t end = space > at ? space : most;   /* one long sentence: at a space */
+    while (end > at + 1 && (text[end] & 0xC0) == 0x80) {
+        end--;   /* not inside a character */
+    }
+    return end;
+}
+
+/* A message is said once it's done, all its text is in pieces and they've all played. */
+static void check_said(int i)
+{
+    msg_t &m = s_turn.msgs[i];
+    if (m.tts != TTS_ACTIVE || !m.done || s_turn.plan_msg <= i) {
+        return;
+    }
+    for (int n = s_turn.npieces > PIECES ? s_turn.npieces - PIECES : 0; n < s_turn.npieces; n++) {
+        if (piece(n).msg == i && !piece(n).done) {
+            return;
+        }
+    }
+    m.tts = TTS_FINISHED;
+}
+
+/* Cuts the next piece from the reply's text, if there's enough of it yet. */
+static bool next_piece(piece_t &p)
+{
+    while (s_turn.plan_msg < s_turn.nmsgs) {
+        int i = s_turn.plan_msg;
+        msg_t &m = s_turn.msgs[i];
+        const char *text = s_turn.texts + i * TEXT_MAX;
+        size_t len = strnlen(text, TEXT_MAX - 1);
+        len = len < m.len ? len : m.len;   /* only what has arrived for this message */
+        if (s_turn.plan_at >= len) {
+            if (!m.done) {
+                return false;   /* more of it may come */
+            }
+            s_turn.plan_msg++;
+            s_turn.plan_at = 0;
+            check_said(i);
+            continue;
+        }
+        size_t end = piece_end(text, len, s_turn.plan_at, s_turn.npieces ? PIECE_MAX : PIECE_FIRST, m.done);
+        if (!end) {
+            return false;
+        }
+        p = piece_t{};
+        p.msg = (int8_t)i;
+        p.start = s_turn.plan_at;
+        p.end = (uint16_t)end;
+        s_turn.plan_at = (uint16_t)end;
+        if (m.tts != TTS_ACTIVE) {
+            m.tts = TTS_ACTIVE;
+            show_reply_start(m);
+        }
+        return true;
+    }
+    return false;
+}
+
+/* Spoken replies: asks for the next piece's speech while the one before plays. */
+static void fetch_next(void)
+{
+    if (s_turn.tts_id || s_turn.npieces - s_turn.play >= PIECES_AHEAD) {
+        return;
+    }
+    piece_t p;
+    if (!next_piece(p)) {
+        return;
+    }
+    static char raw[TEXT_MAX], said[TEXT_MAX];
+    size_t n = p.end - p.start;
+    memcpy(raw, s_turn.texts + p.msg * TEXT_MAX + p.start, n);
+    raw[n] = '\0';
+    if (!muse_hatch_speakable(raw, said, sizeof(said))) {
+        p.fetched = true;   /* nothing to say (Markdown only, say): plays as nothing */
+    } else if (!(s_turn.tts_id = muse_tts_speak(said))) {
+        p.fetched = p.silent = true;
+    } else {
+        s_turn.fetch = s_turn.npieces;
+        if (!s_turn.npieces) {
+            mark(M_TTS);
+        }
+        ESP_LOGI(TAG, "speaking piece %d of message %s (%u chars)", s_turn.npieces, s_turn.msgs[p.msg].id,
+                 (unsigned)n);
+    }
+    piece(s_turn.npieces++) = p;
+}
+
 static void start_tts(void)
 {
+    if (s_turn.speak < 0 && s_turn.nmsgs) {
+        s_turn.speak = !s_turn.text && s_turn.texts && muse_settings_speaker_on() && muse_tts_configured();
+    }
+    if (s_turn.speak == 1) {
+        fetch_next();
+        return;
+    }
     if (s_turn.tts_msg >= 0) {
         return;
     }
@@ -1503,19 +1674,8 @@ static void start_tts(void)
             continue;
         }
         /*
-         * Replies are text, shown at reading pace: silence in place of speech
-         * paces the captions and ends the turn. To speak them instead, send
-         * the message's text (s_turn.texts + i * TEXT_MAX, if texts was
-         * allocated; up to TEXT_MAX - 1 bytes) to a TTS API of your choice and
-         * play the MP3 it returns. In place of the silence below: keep
-         * m.tts = TTS_ACTIVE and s_turn.tts_msg = i, set s_turn.silent = false,
-         * m.pcm_start = s_turn.pcm_out, m.pcm_frames = 0, s_turn.mp3_len = 0,
-         * s_turn.mp3_ended = false, s_turn.kbps = 0, s_turn.down_rate = 0 and
-         * mp3dec_init(&s_turn.dec). Then, on this task, pass the MP3 to
-         * tts_data() as it arrives (it buffers up to MP3_BUF and drops the
-         * rest, so hold off while it's full) and set s_turn.mp3_ended at the
-         * end. decode() plays it at the speaker's volume, captions following,
-         * and finishes the message once it's drained.
+         * Not spoken: silence in place of speech paces the captions at
+         * reading pace and ends the turn just the same.
          */
         m.pcm_start = s_turn.pcm_out;
         m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
@@ -1554,48 +1714,151 @@ static void tts_end(stream_t *s, bool ok)
     }
 }
 
-/* Speaker off: queues the shown message's silence while the reply buffer has room. */
-static void pace_silently(void)
+/* Queues silence up to frame `end` of the reply while the reply buffer has room; true once there. */
+static bool pace_to(uint32_t end)
 {
     static const int16_t zeros[256] = {};
-    msg_t &m = s_turn.msgs[s_turn.tts_msg];
-    uint32_t end = m.pcm_start + m.pcm_frames + TEXT_HOLD_S * MIC_RATE;
     while (s_turn.pcm_out < end && xStreamBufferSpacesAvailable(s_out) >= sizeof(zeros)) {
         uint32_t n = end - s_turn.pcm_out < 256 ? end - s_turn.pcm_out : 256;
         xStreamBufferSend(s_out, zeros, n * sizeof(int16_t), 0);
         s_turn.pcm_out += n;
     }
-    if (s_turn.pcm_out >= end) {
+    return s_turn.pcm_out >= end;
+}
+
+/* Speaker off: the shown message's silence. */
+static void pace_silently(void)
+{
+    msg_t &m = s_turn.msgs[s_turn.tts_msg];
+    if (pace_to(m.pcm_start + m.pcm_frames + TEXT_HOLD_S * MIC_RATE)) {
         m.tts = TTS_FINISHED;
         s_turn.tts_msg = -1;
         s_turn.silent = false;
     }
 }
 
-/* Decodes buffered MP3 while the reply buffer has room. */
-static void decode(void)
+/* Moves what the TTS service has sent for the piece being fetched into the audio buffer. */
+static void take_tts(void)
 {
-    if (s_turn.tts_msg < 0) {
+    if (!s_turn.tts_id) {
         return;
     }
-    if (s_turn.silent) {
-        pace_silently();
+    piece_t &p = piece(s_turn.fetch);
+    muse_tts_state_t st;
+    size_t n = muse_tts_take(s_turn.tts_id, s_turn.mp3 + s_turn.mp3_len, MP3_BUF - s_turn.mp3_len, &st);
+    if (n) {
+        mark(M_MP3);
+        s_turn.mp3_len += n;
+        p.got += n;
+        p.bytes += n;
+    }
+    if (st == MUSE_TTS_BUSY) {
         return;
     }
+    s_turn.tts_id = 0;
+    p.fetched = true;
+    if (!p.got) {
+        ESP_LOGW(TAG, "no speech for piece %d: showing it instead", s_turn.fetch);
+        p.silent = true;
+    }
+}
+
+/* Drops the first n bytes of buffered audio: the playing piece's. */
+static void consume_audio(piece_t &p, size_t n)
+{
+    if (n) {
+        memmove(s_turn.mp3, s_turn.mp3 + n, s_turn.mp3_len - n);
+        s_turn.mp3_len -= n;
+        p.bytes -= n;
+    }
+}
+
+/*
+ * Tells MP3 from WAV by a piece's first bytes, and for WAV reads the header.
+ * False until there's enough to tell.
+ */
+static bool audio_start(piece_t &p)
+{
+    if (p.bytes < 4 && !p.fetched) {
+        return false;
+    }
+    mp3dec_init(&s_turn.dec);
+    s_turn.down_rate = 0;
+    if (p.bytes < 4 || memcmp(s_turn.mp3, "RIFF", 4)) {
+        p.audio = AUDIO_MP3;
+        return true;
+    }
+    int rate = 0, channels = 0;
+    size_t start = muse_hatch_wav_parse(s_turn.mp3, p.bytes, &rate, &channels);
+    if (!start && !p.fetched) {
+        return false;
+    }
+    p.audio = AUDIO_WAV;
+    p.channels = 1;
+    if (!start || start == SIZE_MAX) {
+        ESP_LOGW(TAG, "can't play this WAV; skipping the piece");
+        consume_audio(p, p.bytes);
+        return true;
+    }
+    if (!s_turn.play) {
+        ESP_LOGI(TAG, "reply audio: WAV %d Hz, %d ch", rate, channels);
+    }
+    consume_audio(p, start);
+    p.rate = rate;
+    p.channels = (uint8_t)channels;
+    s_turn.down_rate = rate;
+    resampler_init(&s_turn.down, rate, MIC_RATE);
+    return true;
+}
+
+/* Plays a piece's buffered WAV samples while the reply buffer has room. */
+static void decode_wav(piece_t &p)
+{
+    size_t frame = 2 * p.channels;
+    /* At most a quarter of an MP3 frame's samples a pass: resampled from 8 kHz up, that still fits. */
+    size_t most = MINIMP3_MAX_SAMPLES_PER_FRAME / 4 / p.channels;
+    size_t off = 0;
+    while (p.bytes - off >= frame &&
+           xStreamBufferSpacesAvailable(s_out) >= (MINIMP3_MAX_SAMPLES_PER_FRAME / 2 + 8) * sizeof(int16_t)) {
+        size_t frames = (p.bytes - off) / frame;
+        frames = frames < most ? frames : most;
+        memcpy(s_pcm, s_turn.mp3 + off, frames * frame);   /* the buffer may be unaligned */
+        off += frames * frame;
+        if (p.channels == 2) {
+            for (size_t k = 0; k < frames; k++) {
+                s_pcm[k] = (s_pcm[2 * k] + s_pcm[2 * k + 1]) / 2;
+            }
+        }
+        size_t n = resample(&s_turn.down, s_pcm, frames, s_pcm16);
+        if (s_turn.gen == s_gen.load()) {
+            mark(M_AUDIO);
+            xStreamBufferSend(s_out, s_pcm16, n * sizeof(int16_t), 0);
+        }
+        s_turn.pcm_out += n;
+    }
+    if (p.fetched && p.bytes - off < frame) {
+        off = p.bytes;   /* half a sample at the end */
+    }
+    consume_audio(p, off);
+}
+
+/* Decodes a piece's buffered MP3 while the reply buffer has room. */
+static void decode_mp3(piece_t &p)
+{
     /*
      * minimp3 only takes a frame once it can see the next one's header. Given
      * less, it resets and says to skip all of it, which drops speech and clicks.
-     * So until the stream ends, leave the last MP3_HOLD bytes for more to arrive.
+     * So until the piece is all here, leave the last MP3_HOLD bytes for more.
      */
-    size_t hold = s_turn.mp3_ended ? 0 : MP3_HOLD;
+    size_t hold = p.fetched ? 0 : MP3_HOLD;
     size_t off = 0;
-    while (s_turn.mp3_len - off > hold &&
+    while (p.bytes - off > hold &&
            xStreamBufferSpacesAvailable(s_out) >= (MINIMP3_MAX_SAMPLES_PER_FRAME / 2 + 8) * sizeof(int16_t)) {
         mp3dec_frame_info_t info;
-        int samples = mp3dec_decode_frame(&s_turn.dec, s_turn.mp3 + off, s_turn.mp3_len - off, s_pcm, &info);
+        int samples = mp3dec_decode_frame(&s_turn.dec, s_turn.mp3 + off, p.bytes - off, s_pcm, &info);
         if (!info.frame_bytes) {
-            if (s_turn.mp3_ended) {
-                off = s_turn.mp3_len;   /* trailing junk */
+            if (p.fetched) {
+                off = p.bytes;   /* trailing junk */
             }
             break;
         }
@@ -1609,7 +1872,9 @@ static void decode(void)
             }
         }
         if (s_turn.down_rate != info.hz) {
-            ESP_LOGI(TAG, "reply audio: %d Hz, %d ch, %d kbps", info.hz, info.channels, info.bitrate_kbps);
+            if (!s_turn.play) {
+                ESP_LOGI(TAG, "reply audio: %d Hz, %d ch, %d kbps", info.hz, info.channels, info.bitrate_kbps);
+            }
             s_turn.down_rate = info.hz;
             resampler_init(&s_turn.down, info.hz, MIC_RATE);
         }
@@ -1619,23 +1884,62 @@ static void decode(void)
             xStreamBufferSend(s_out, s_pcm16, n * sizeof(int16_t), 0);
         }
         s_turn.pcm_out += n;
-        s_turn.kbps = info.bitrate_kbps;
+        p.rate = info.bitrate_kbps;
     }
-    if (off) {
-        memmove(s_turn.mp3, s_turn.mp3 + off, s_turn.mp3_len - off);
-        s_turn.mp3_len -= off;
+    consume_audio(p, off);
+}
+
+/* Plays the reply's pieces in order, as far as their audio and the reply buffer allow. */
+static void play_pieces(void)
+{
+    while (s_turn.play < s_turn.npieces) {
+        piece_t &p = piece(s_turn.play);
+        if (!p.started) {
+            if (!p.fetched && p.bytes < 4) {
+                return;   /* waiting for its speech */
+            }
+            p.started = true;
+            p.pcm_start = s_turn.pcm_out;
+        }
+        if (p.silent) {
+            if (!pace_to(p.pcm_start + (uint32_t)((p.end - p.start) * MIC_RATE / TEXT_CHARS_PER_S))) {
+                return;
+            }
+        } else {
+            if (p.audio == AUDIO_UNKNOWN && !audio_start(p)) {
+                return;
+            }
+            if (p.audio == AUDIO_WAV) {
+                decode_wav(p);
+            } else {
+                decode_mp3(p);
+            }
+            if (!p.fetched || p.bytes) {
+                return;
+            }
+        }
+        p.pcm_frames = s_turn.pcm_out - p.pcm_start;
+        p.done = true;
+        check_said(p.msg);
+        s_turn.play++;
     }
-    msg_t &m = s_turn.msgs[s_turn.tts_msg];
-    if (s_turn.mp3_ended && s_turn.kbps > 0) {
-        /* All of it is here: what's decoded plus what the bitrate says the rest holds. */
-        uint32_t rest = (uint32_t)((uint64_t)s_turn.mp3_len * 8 * MIC_RATE / (s_turn.kbps * 1000));
-        m.pcm_frames = s_turn.pcm_out - m.pcm_start + rest;
+}
+
+/* Spoken: the pieces' speech. Not: the shown message's silence. */
+static void decode(void)
+{
+    if (s_turn.speak == 1) {
+        take_tts();
+        play_pieces();
+    } else if (s_turn.tts_msg >= 0) {
+        pace_silently();
     }
-    if (s_turn.mp3_ended && !s_turn.mp3_len) {
-        m.pcm_frames = s_turn.pcm_out - m.pcm_start;
-        m.tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
-    }
+}
+
+/* A message's speech or silence is still to come. */
+static bool speech_pending(void)
+{
+    return s_turn.tts_msg >= 0 || s_turn.tts_id || s_turn.play < s_turn.npieces;
 }
 
 /* Ends the turn once the reply is complete and spoken, or on timeouts. */
@@ -1650,7 +1954,9 @@ static void check_turn(void)
         return;
     }
     bool text = s_turn.text;
-    if (t - s_turn.start_us > (text ? TEXT_TURN_CAP_US : TURN_CAP_US)) {
+    /* Not while a message is being said: the speech ends on its own, and the
+     * screen may be holding it while the reply is read. */
+    if (t - s_turn.start_us > (text ? TEXT_TURN_CAP_US : TURN_CAP_US) && !speech_pending()) {
         ESP_LOGW(TAG, "turn hit the time cap");
         turn_done(false);
         return;
@@ -2038,6 +2344,7 @@ extern "C" void muse_hatch_start(void)
         s.cap = NDJSON_LINE_MAX;
     }
     s_turn.tts_msg = -1;
+    muse_tts_start();   /* if a TTS service is set up */
     /* Stack in PSRAM: TLS, Noise and the MP3 decoder (~16 KB of scratch) all run here. */
     if (!s_cmds || !s_events || !s_in || !s_out || !s_turn.chunk || !s_turn.mp3 || (VOICE_NOTE && !s_turn.note) || !s_pcm || !s_pcm16 ||
         xTaskCreatePinnedToCoreWithCaps(hatch_task, "muse_chat", 48 * 1024, nullptr, 5, nullptr, 0,
@@ -2132,19 +2439,73 @@ extern "C" muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap)
     return MUSE_HATCH_EV_NONE;
 }
 
-extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
+/* The message being said after `played` frames (the last one whose speech has
+ * started), or -1 before any; *at: how far through its text the speech is. */
+/* How long a piece's speech is: once played, exactly; once all fetched, from its size; else guessed from its text. */
+static uint32_t piece_frames(const piece_t &p)
 {
-    /* The message being spoken: the last one whose speech has started. */
-    const msg_t *m = nullptr;
-    const char *text = nullptr;
+    if (p.done) {
+        return p.pcm_frames;
+    }
+    if (p.silent) {
+        return (uint32_t)((p.end - p.start) * MIC_RATE / TEXT_CHARS_PER_S);
+    }
+    if (p.fetched && p.audio == AUDIO_WAV && p.rate) {
+        return (uint32_t)((uint64_t)p.got / (2 * p.channels) * MIC_RATE / p.rate);
+    }
+    if (p.fetched && p.audio == AUDIO_MP3 && p.rate) {
+        return (uint32_t)((uint64_t)p.got * 8 * MIC_RATE / (p.rate * 1000));
+    }
+    return (uint32_t)((p.end - p.start) * MIC_RATE / SPEECH_CHARS_PER_S);
+}
+
+/* The message being said after `played` frames, and how far through its text the speech is. */
+static int spoken_msg(size_t played, size_t *at)
+{
+    *at = 0;
+    if (s_turn.speak == 1) {
+        /* Spoken a piece at a time: the last piece whose speech has started. */
+        const piece_t *said = nullptr;
+        for (int n = s_turn.npieces > PIECES ? s_turn.npieces - PIECES : 0; n < s_turn.npieces; n++) {
+            const piece_t &p = piece(n);
+            if (p.started && p.pcm_start <= played) {
+                said = &p;
+            }
+        }
+        if (!said) {
+            return -1;
+        }
+        size_t len = said->end - said->start;
+        uint32_t frames = piece_frames(*said);
+        size_t into = frames ? (size_t)((uint64_t)(played - said->pcm_start) * len / frames) : 0;
+        *at = said->start + (into < len ? into : len ? len - 1 : 0);
+        return said->msg;
+    }
+    int spoken = -1;
     for (int i = 0; i < s_turn.nmsgs && s_turn.texts; i++) {
         const msg_t &c = s_turn.msgs[i];
         if (c.tts >= TTS_ACTIVE && c.len && c.pcm_start <= played) {
-            m = &c;
-            text = s_turn.texts + i * TEXT_MAX;
+            spoken = i;
         }
     }
-    if (!m) {
+    if (spoken < 0) {
+        return -1;
+    }
+    const msg_t &m = s_turn.msgs[spoken];
+    size_t len = strnlen(s_turn.texts + spoken * TEXT_MAX, TEXT_MAX - 1);
+    uint32_t frames = m.pcm_frames ? m.pcm_frames : (uint32_t)(len * MIC_RATE / SPEECH_CHARS_PER_S);
+    *at = frames ? (size_t)((uint64_t)(played - m.pcm_start) * len / frames) : 0;
+    if (*at >= len) {
+        *at = len ? len - 1 : 0;
+    }
+    return spoken;
+}
+
+extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
+{
+    size_t at;
+    int spoken = spoken_msg(played, &at);
+    if (spoken < 0) {
         /* Nothing said yet: the reply's opening page, to read while the speech is on its way. */
         for (int i = 0; i < s_turn.nmsgs && s_turn.texts; i++) {
             if (s_turn.msgs[i].len) {
@@ -2153,14 +2514,42 @@ extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
         }
         return false;
     }
-    size_t len = strlen(text);
-    uint32_t frames = m->pcm_frames ? m->pcm_frames : (uint32_t)(len * MIC_RATE / SPEECH_CHARS_PER_S);
-    size_t at = frames ? (size_t)((uint64_t)(played - m->pcm_start) * len / frames) : 0;
-    if (at >= len) {
-        at = len ? len - 1 : 0;
-    }
+    return muse_hatch_caption_at(s_turn.texts + spoken * TEXT_MAX, at, out, cap);
+}
 
-    return muse_hatch_caption_at(text, at, out, cap);
+extern "C" size_t muse_hatch_turn_reply(char *out, size_t cap)
+{
+    size_t o = 0;
+    out[0] = '\0';
+    for (int i = 0; i < s_turn.nmsgs && s_turn.texts; i++) {
+        if (s_turn.msgs[i].len) {
+            /* Bounded: the session task may be appending to it. */
+            const char *text = s_turn.texts + i * TEXT_MAX;
+            o += snprintf(out + o, o < cap ? cap - o : 0, "%s%.*s", o ? "\n\n" : "", (int)strnlen(text, TEXT_MAX - 1),
+                          text);
+            o = o < cap ? o : cap - 1;
+        }
+    }
+    return o;
+}
+
+extern "C" size_t muse_hatch_turn_reply_at(size_t played)
+{
+    size_t at, o = 0;
+    int spoken = spoken_msg(played, &at);
+    for (int i = 0; i < s_turn.nmsgs && s_turn.texts; i++) {
+        if (!s_turn.msgs[i].len) {
+            continue;
+        }
+        if (o) {
+            o += 2;   /* the blank line between messages */
+        }
+        if (i == spoken) {
+            return o + at;
+        }
+        o += strnlen(s_turn.texts + i * TEXT_MAX, TEXT_MAX - 1);
+    }
+    return 0;   /* before the speech: the start */
 }
 
 extern "C" size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)

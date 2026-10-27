@@ -340,14 +340,57 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
 
 static void go_idle(const char *caption);
 
+#define SKIP_SPEED 4                   /* scrolled ahead of the speech: how fast it catches up */
+#define REVIEW_US (20 * 1000000LL)     /* a finished reply stays up this long untouched */
+
+static char *s_reply;   /* MUSE_REPLY_MAX: the reply's text for the screen */
+
+/* The reply so far, and where the speech is in it, for the screen to scroll. */
+static void publish_reply(size_t played)
+{
+    if (s_reply) {
+        muse_hatch_turn_reply(s_reply, MUSE_REPLY_MAX);
+        muse_state_set_reply(s_reply, muse_hatch_turn_reply_at(played));
+    }
+}
+
 /*
- * Plays Hatch's reply as it arrives, with its text as the caption. Returns
- * true if interrupted by a new press. *delivered: the VM has the note.
+ * The finished reply stays up to scroll through until REVIEW_US pass with no
+ * touch, or a tap closes it. Returns true if a press ends it instead.
+ */
+static bool review_reply(size_t played)
+{
+    muse_state_set_mode(MUSE_MODE_SPEAKING);   /* keeps the reply on screen */
+    publish_reply(played);
+    int64_t end = esp_timer_get_time();
+    muse_state_reader_take_tap();
+    for (;;) {
+        if (got_event(MUSE_PTT_DOWN)) {
+            return true;
+        }
+        if (muse_state_reader_take_tap()) {
+            return false;
+        }
+        bool touched = muse_state_reader() != MUSE_READER_FOLLOW || muse_state_idle_secs() * 1e6f < REVIEW_US;
+        if (esp_timer_get_time() - end >= REVIEW_US && !touched) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
+/*
+ * Plays Hatch's reply as it arrives, with its text on screen. Touch reads it
+ * at your own pace: a finger down, or scrolled back, the reply waits;
+ * scrolled ahead, it hurries after the screen quietly. Returns true if
+ * interrupted by a new press. *delivered: the VM has the note.
  */
 static bool hatch_reply(bool *delivered)
 {
     muse_state_set_mode(MUSE_MODE_THINKING);
     muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
+    muse_state_set_reply("", 0);
+    muse_state_reader_take_tap();
     static int16_t buf[MUSE_AUDIO_CHUNK];
     static const int16_t silence[MUSE_AUDIO_CHUNK];
     char text[96];
@@ -397,40 +440,64 @@ static bool hatch_reply(bool *delivered)
             muse_state_set_level(0);
             return true;
         }
-        size_t n = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, speaking || done ? 0 : 20);
-        if (n) {
-            if (!speaking) {
-                speaking = true;
-                muse_state_set_mode(MUSE_MODE_SPEAKING);
-                ESP_LOGI(TAG, "reply audio after %.2fs", (esp_timer_get_time() - t0) / 1e6);
+        muse_state_reader_take_tap();   /* while it plays, a tap only scrolls the screen back */
+        muse_reader_t reader = speaking || replied ? muse_state_reader() : MUSE_READER_FOLLOW;
+        size_t n = 0;
+        if (reader == MUSE_READER_WAIT) {
+            muse_state_set_level(0);
+            if (speaking) {
+                muse_audio_write(silence, MUSE_AUDIO_CHUNK);   /* paces this loop too */
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(20));
             }
-            muse_state_set_level(muse_audio_level(buf, n));
-            muse_audio_write(buf, n);
-            played += n;
-        } else if (done) {
-            break;
-        } else if (speaking) {
-            /* Between messages: keep the speaker fed so it doesn't replay stale DMA. */
+        } else if (reader == MUSE_READER_SKIP) {
+            for (int i = 0; i < SKIP_SPEED; i++) {
+                size_t got = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, 0);
+                played += got;
+                n += got;
+            }
+            if (!n && done) {
+                break;
+            }
             muse_state_set_level(0);
             muse_audio_write(silence, MUSE_AUDIO_CHUNK);
+        } else {
+            n = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, speaking || done ? 0 : 20);
+            if (n) {
+                if (!speaking) {
+                    speaking = true;
+                    muse_state_set_mode(MUSE_MODE_SPEAKING);
+                    ESP_LOGI(TAG, "reply audio after %.2fs", (esp_timer_get_time() - t0) / 1e6);
+                }
+                muse_state_set_level(muse_audio_level(buf, n));
+                muse_audio_write(buf, n);
+                played += n;
+            } else if (done) {
+                break;
+            } else if (speaking) {
+                /* Between messages: keep the speaker fed so it doesn't replay stale DMA. */
+                muse_state_set_level(0);
+                muse_audio_write(silence, MUSE_AUDIO_CHUNK);
+            }
         }
-        /* The page being said, or before the speech the reply's opening page. */
-        if ((speaking || replied) && muse_hatch_turn_caption(played, page, sizeof(page))) {
-            muse_state_set_caption("%s", page);
+        /* The whole reply for the full layout, and the page being said (or
+         * before the speech the reply's opening page) for small screens. */
+        if (speaking || replied) {
+            publish_reply(played);
+            if (muse_hatch_turn_caption(played, page, sizeof(page))) {
+                muse_state_set_caption("%s", page);
+            }
         }
     }
     muse_state_set_level(0);
     ESP_LOGI(TAG, "muse reply: %.2fs of audio, %.2fs total", (double)played / MUSE_AUDIO_RATE,
              (esp_timer_get_time() - t0) / 1e6);
-    if (!played) {
-        /* No speech (TTS unavailable): leave the reply text up for a moment. */
-        vTaskDelay(pdMS_TO_TICKS(2500));
-    }
-    return false;
+    return replied && review_reply(played);
 }
 
 static void go_idle(const char *caption)
 {
+    muse_state_set_reply("", 0);
     muse_state_set_progress(0);
     muse_state_set_mode(MUSE_MODE_IDLE);
     muse_state_set_caption("%s", caption);
@@ -886,6 +953,7 @@ esp_err_t muse_voice_start(QueueHandle_t queue)
 {
     s_queue = queue;
     s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
+    s_reply = heap_caps_malloc(MUSE_REPLY_MAX, MUSE_BIG_CAPS);   /* without it, captions only */
     if (!s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");

@@ -42,6 +42,8 @@
 static volatile sig_atomic_t s_quit;
 static bool s_ready;
 static float s_level;
+static char s_reply[MUSE_REPLY_MAX];
+static size_t s_reply_at;
 static float s_progress;
 static muse_power_t s_power = {
     .battery_pct = 72,
@@ -62,6 +64,7 @@ static void usage(FILE *out, const char *argv0)
             "Scenario lines are key=value. Supported keys:\n"
             "  face=boot|idle|listening|thinking|speaking|error|off|happy\n"
             "  caption=TEXT       level=0..1        progress=0..1\n"
+            "  reply=TEXT (\\n for a line break)  reply_at=BYTE (where the speech is)\n"
             "  battery=-1..100    battery_mv=MV     usb=true|false\n"
             "  charging=true|false                  asleep=true|false\n"
             "  wifi=off|no_network|connecting|connected|failed|not_nearby\n"
@@ -299,6 +302,24 @@ static bool apply_setting(const char *key, const char *value, bool real_time)
     }
     if (!strcmp(key, "caption")) {
         muse_state_set_caption("%s", value);
+        return true;
+    }
+    if (!strcmp(key, "reply")) {
+        static char reply[MUSE_REPLY_MAX];
+        size_t o = 0;
+        for (const char *p = value; *p && o + 1 < sizeof(reply); p++) {
+            bool nl = p[0] == '\\' && p[1] == 'n';
+            reply[o++] = nl ? '\n' : *p;
+            p += nl;
+        }
+        reply[o] = '\0';
+        strlcpy(s_reply, reply, sizeof(s_reply));
+        muse_state_set_reply(s_reply, s_reply_at);
+        return true;
+    }
+    if (!strcmp(key, "reply_at") && parse_long(value, 0, MUSE_REPLY_MAX, &number)) {
+        s_reply_at = (size_t)number;
+        muse_state_set_reply(s_reply, s_reply_at);
         return true;
     }
     if (!strcmp(key, "level") && parse_float(value, 0.0f, 1.0f, &scalar)) {

@@ -54,7 +54,7 @@ static const char *TAG = "muse_chat_link";
 #define SEND_WAIT_MS 200               /* the press queues the pre-roll all at once */
 #define SETTLE_US 3000000               /* quiet after a reply before the turn ends */
 #define REPLY_TIMEOUT_US 60000000
-#define READ_CHARS_PER_S 14             /* caption scroll, about speaking pace */
+#define READ_CHARS_PER_S 11             /* caption scroll, unhurried reading pace */
 
 
 /* A reply being received on Link's session task, read by the voice task once done. */
@@ -894,6 +894,27 @@ bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
     }
     size_t at = read_at(esp_timer_get_time());
     return muse_hatch_caption_at(s_turn.text, at < len ? at : len - 1, out, cap);
+}
+
+size_t muse_hatch_turn_reply(char *out, size_t cap)
+{
+    out[0] = '\0';
+    if (!s_turn.replied) {
+        return 0;
+    }
+    strlcpy(out, s_turn.text, cap);
+    return strlen(out);
+}
+
+size_t muse_hatch_turn_reply_at(size_t played)
+{
+    (void)played;   /* no speech: the reading pace */
+    size_t len = strlen(s_turn.text);
+    if (s_turn.phase != T_REPLY) {
+        return len;
+    }
+    size_t at = read_at(esp_timer_get_time());
+    return at < len ? at : len;
 }
 
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)

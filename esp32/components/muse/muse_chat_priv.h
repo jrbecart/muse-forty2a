@@ -50,11 +50,17 @@ void muse_hatch_chat_forget(void);
 void muse_hatch_wav_header(uint8_t h[MUSE_HATCH_WAV_HEADER], uint32_t rate);
 /* Writes 4 characters per 3 bytes of `in`, padded; returns the length. */
 size_t muse_hatch_base64(const uint8_t *in, size_t n, char *out);
+/* Where the samples of a 16-bit PCM WAV start in its first len bytes: 0 if
+ * the header needs more of it, SIZE_MAX if it isn't one (or can't be played:
+ * not 16-bit PCM, more than two channels). Sets *rate and *channels. */
+size_t muse_hatch_wav_parse(const uint8_t *p, size_t len, int *rate, int *channels);
 
 /* Caption text (muse_chat_text.c): the last line or so of `src`, and the page
  * of wrapped lines holding byte `at` of `text` (false if there's no text). */
 void muse_hatch_tail_words(const char *src, char *out, size_t cap);
 bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap);
+/* Reply text for a TTS service: without Markdown's marks or URLs (muse_chat_text.c). */
+size_t muse_hatch_speakable(const char *text, char *out, size_t cap);
 
 #ifdef __cplusplus
 }

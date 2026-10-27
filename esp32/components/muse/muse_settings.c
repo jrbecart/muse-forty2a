@@ -39,6 +39,7 @@ static struct {
     uint16_t sleep_s;
     bool wifi_on;
     bool ble_on;
+    char lang[3];
     char ssid[MUSE_SSID_MAX + 1];
     char pass[MUSE_PASS_MAX + 1];
     char host[MUSE_HOST_MAX + 1];
@@ -51,6 +52,7 @@ static struct {
     .brightness = 100,
     .sleep_s = 120,
     .wifi_on = true,
+    .lang = "en",
     .host = DEFAULT_HOST,
 };
 
@@ -127,6 +129,7 @@ esp_err_t muse_settings_init(void)
     if (nvs_get_u8(s_nvs, "ble_on", &b) == ESP_OK) {
         s.ble_on = b;
     }
+    load_str("lang", s.lang, sizeof(s.lang));
     load_str("ssid", s.ssid, sizeof(s.ssid));
     load_str("pass", s.pass, sizeof(s.pass));
     load_str("host", s.host, sizeof(s.host));
@@ -154,6 +157,7 @@ int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
+const char *muse_settings_speech_lang(void) { return s.lang; }
 
 /* Home Link owns the saved networks (this is the first); the local copy is only a fallback. */
 void muse_settings_wifi(char ssid[MUSE_SSID_MAX + 1], char pass[MUSE_PASS_MAX + 1])
@@ -232,6 +236,13 @@ void muse_settings_set_wifi_on(bool on)
     s.wifi_on = on;
     save_u8("wifi_on", on);
     notify(MUSE_SETTING_WIFI);
+}
+
+void muse_settings_set_speech_lang(const char *lang)
+{
+    strlcpy(s.lang, lang, sizeof(s.lang));
+    save_str("lang", s.lang);
+    notify(MUSE_SETTING_LANGUAGE);
 }
 
 void muse_settings_set_ble_on(bool on)

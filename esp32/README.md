@@ -215,16 +215,74 @@ keyboard input, and can render scripted screenshots without a display server.
 
 Replies from Muse are text: push-to-talk sends your voice note, Muse
 transcribes it and answers in writing, and boards with a screen show the
-answer as captions (the Voice PE's replies show up in the Muse app). Two
-things you can change:
+answer (the Voice PE's replies show up in the Muse app). On round and larger
+screens the reply fills the screen and scrolls along with it: touch and hold
+to pause, scroll back to reread (the reply waits for you), scroll ahead to
+skip, and tap to go back to where it is. A finished reply stays up until it
+has gone 20 seconds untouched, or a tap closes it. To get shorter answers,
+ask for them in the message itself, such as "Answer in one sentence."
 
-- **Shorter answers.** Ask for them in the message itself, such as "Answer in
-  one sentence."
-- **Spoken answers.** Send each reply's text to a text-to-speech API of your
-  choice and play the audio it returns. On boards with PSRAM, `start_tts` in
-  [`components/muse/muse_chat_session.cpp`](components/muse/muse_chat_session.cpp)
-  is the spot: it has the reply text, and the MP3 decoder, speaker and volume
-  are already wired up there.
+### Spoken replies (TTS)
+
+Muse doesn't speak gadget replies itself, but on boards with PSRAM the
+firmware can send each reply to a text-to-speech service and play the MP3 it
+returns, with the text on screen following the speech. Pick the service in
+`idf.py menuconfig` under Muse > Spoken replies (TTS), or add the lines below
+to the build directory's `sdkconfig` before building. The speaker has to be
+on (hold the speaker button); with it off, or if the service fails, the reply
+is shown at reading pace instead.
+
+- **Deepgram** (cloud, free credit on sign-up at console.deepgram.com):
+
+  ```
+  CONFIG_MUSE_TTS_DEEPGRAM=y
+  CONFIG_MUSE_TTS_DEEPGRAM_KEY="your Deepgram API key"
+  CONFIG_MUSE_TTS_DEEPGRAM_MODEL="aura-2-thalia-en"
+  ```
+
+- **Cloudflare Workers AI** (free plan, no card): deploy the small Worker in
+  [`tools/tts-worker/`](tools/tts-worker/README.md), which speaks with
+  MeloTTS (hours a day free) or Deepgram Aura, and set the OpenAI-compatible
+  options below to its URL and secret.
+
+- **Your own server** (free): anything with OpenAI's `/v1/audio/speech`, such
+  as [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) on a computer
+  at home or a small VPS (2 vCPU and 2 GB of RAM is plenty):
+
+  ```sh
+  docker run -d --restart unless-stopped -p 8880:8880 ghcr.io/remsky/kokoro-fastapi-cpu:latest
+  ```
+
+  ```
+  CONFIG_MUSE_TTS_OPENAI=y
+  CONFIG_MUSE_TTS_URL="http://tts.local:8880/v1/audio/speech"
+  CONFIG_MUSE_TTS_MODEL="kokoro"
+  CONFIG_MUSE_TTS_VOICE="af_heart"
+  ```
+
+  Kokoro-FastAPI has no password of its own. On a VPS, publish it only on
+  `127.0.0.1` (`-p 127.0.0.1:8880:8880`) and put a reverse proxy with HTTPS
+  and a shared secret in front, for example this Caddyfile:
+
+  ```
+  tts.example.com {
+      @ok header Authorization "Bearer a-long-random-secret"
+      handle @ok {
+          reverse_proxy 127.0.0.1:8880
+      }
+      respond 401
+  }
+  ```
+
+  then set `CONFIG_MUSE_TTS_URL="https://tts.example.com/v1/audio/speech"`
+  and `CONFIG_MUSE_TTS_API_KEY="a-long-random-secret"`. The same settings
+  work with OpenAI itself (`https://api.openai.com/v1/audio/speech`, model
+  `tts-1`, voice `alloy`, your API key).
+
+Keys end up in the firmware like the SDK token: keep `sdkconfig` out of git.
+Markdown in replies (asterisks, headings, links) is cleaned up before it's
+sent, so it isn't read out. The code is in
+[`components/muse/muse_tts.c`](components/muse/muse_tts.c).
 
 A few things worth knowing:
 

@@ -43,8 +43,10 @@ screen with a speaker, mic and battery, as a full Muse gadget:
 - Avatar UI, touch settings and push-to-talk on the BOOT button
 - Runs on its own battery, with the level on screen, screen sleep and deep-sleep power off
 - Both hardware revisions, detected at boot: V1 (PCM5101 DAC + I2S mic) and V2 (ES8311 + ES7210)
-- Replies from Muse show on screen as text
-- **Spoken replies (TTS): coming soon**
+- Replies from Muse fill the screen as scrolling text you can hold, scroll back
+  and catch up on by touch
+- Spoken replies (TTS) with Deepgram or a free self-hosted Kokoro server: see
+  [`esp32/README.md`](esp32/README.md#spoken-replies-tts)
 
 Build and flash it from `esp32/` with ESP-IDF v6.0.1:
 

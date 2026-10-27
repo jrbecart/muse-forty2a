@@ -60,7 +60,7 @@ typedef void (*text_done_cb_t)(const char *text);
 static int s_text_scale = 466;
 static lv_obj_t *s_tile;
 static lv_obj_t *s_current;
-static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_battery, *s_power, *s_text;
+static lv_obj_t *s_home, *s_wifi, *s_hatch, *s_ble, *s_sound, *s_sleep, *s_lang, *s_battery, *s_power, *s_text;
 
 /*
  * Only home is kept. A sub-page is built when it opens and deleted on the way
@@ -73,7 +73,7 @@ typedef struct {
 } page_t;
 
 /* Home values. */
-static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_battery, *s_about;
+static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home_sleep, *s_home_lang, *s_home_battery, *s_about;
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
@@ -102,6 +102,13 @@ static const int SLEEP_CHOICES[] = { 0, 30, 60, 120, 300, 600 };
 static const char *const SLEEP_NAMES[] = { "Never", "30 seconds", "1 minute", "2 minutes", "5 minutes", "10 minutes" };
 #define SLEEP_COUNT (int)(sizeof(SLEEP_CHOICES) / sizeof(SLEEP_CHOICES[0]))
 static lv_obj_t *s_sleep_checks[SLEEP_COUNT];
+
+/* Language page: the spoken replies' language when a sentence can't tell
+ * (the font has no accents, hence the English names). */
+static const char *const LANG_CODES[] = { "en", "fr", "es" };
+static const char *const LANG_NAMES[] = { "English", "French", "Spanish" };
+#define LANG_COUNT (int)(sizeof(LANG_CODES) / sizeof(LANG_CODES[0]))
+static lv_obj_t *s_lang_checks[LANG_COUNT];
 
 /* Battery page. */
 static lv_obj_t *s_batt_status, *s_batt_level, *s_batt_drain, *s_batt_full, *s_batt_off, *s_batt_slept, *s_batt_wakes,
@@ -358,7 +365,7 @@ static lv_obj_t *info_row(lv_obj_t *list, const char *text)
 
 static void drop(lv_obj_t *p)
 {
-    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_battery, &s_power, &s_text };
+    lv_obj_t **const pages[] = { &s_wifi, &s_hatch, &s_ble, &s_sound, &s_sleep, &s_lang, &s_battery, &s_power, &s_text };
     for (size_t i = 0; i < sizeof(pages) / sizeof(pages[0]); i++) {
         if (*pages[i] == p) {
             *pages[i] = NULL;
@@ -1105,6 +1112,42 @@ static void tick_sleep(void)
     }
 }
 
+/* ---------- Language ---------- */
+
+static void on_lang_choice(lv_event_t *e)
+{
+    muse_settings_set_speech_lang(LANG_CODES[(int)(intptr_t)lv_event_get_user_data(e)]);
+}
+
+static void build_lang_page(lv_obj_t *tile)
+{
+    lv_obj_t *list;
+    s_lang = page(tile, "LANGUAGE", true, &list);
+    note(list, "Spoken replies follow the language of each sentence. When one is too short to tell, use:");
+    for (int i = 0; i < LANG_COUNT; i++) {
+        row(list, NULL, LANG_NAMES[i], &s_lang_checks[i], on_lang_choice, (void *)(intptr_t)i);
+        lv_obj_set_style_text_color(s_lang_checks[i], lv_color_hex(COLOR_ACCENT), 0);
+    }
+}
+
+static const char *lang_name(const char *code)
+{
+    for (int i = 0; i < LANG_COUNT; i++) {
+        if (!strcmp(LANG_CODES[i], code)) {
+            return LANG_NAMES[i];
+        }
+    }
+    return code;
+}
+
+static void tick_lang(void)
+{
+    const char *cur = muse_settings_speech_lang();
+    for (int i = 0; i < LANG_COUNT; i++) {
+        set_text(s_lang_checks[i], !strcmp(LANG_CODES[i], cur) ? LV_SYMBOL_OK : "");
+    }
+}
+
 /* ---------- Battery ---------- */
 
 static void on_battery_reset(lv_event_t *e)
@@ -1244,6 +1287,7 @@ static const page_t HATCH = { &s_hatch, build_hatch_page };
 static const page_t BLE = { &s_ble, build_ble_page };
 static const page_t SOUND = { &s_sound, build_sound_page };
 static const page_t SLEEP = { &s_sleep, build_sleep_page };
+static const page_t LANG = { &s_lang, build_lang_page };
 static const page_t BATTERY = { &s_battery, build_battery_page };
 static const page_t POWER = { &s_power, build_power_page };
 
@@ -1256,6 +1300,7 @@ static void build_home(lv_obj_t *tile)
     row(list, LV_SYMBOL_BLUETOOTH, "Bluetooth", &s_home_ble, on_nav, (void *)&BLE);
     row(list, LV_SYMBOL_VOLUME_MAX, "Sound", &s_home_sound, on_nav, (void *)&SOUND);
     row(list, LV_SYMBOL_EYE_CLOSE, "Sleep", &s_home_sleep, on_nav, (void *)&SLEEP);
+    row(list, LV_SYMBOL_AUDIO, "Language", &s_home_lang, on_nav, (void *)&LANG);
     row(list, LV_SYMBOL_BATTERY_FULL, "Battery", &s_home_battery, on_nav, (void *)&BATTERY);
     row(list, LV_SYMBOL_POWER, "Power off", NULL, on_nav, (void *)&POWER);
     s_about = note(list, "");
@@ -1282,6 +1327,7 @@ static void tick_home(void)
         set_text(s_home_sound, "Muted");
     }
     set_text(s_home_sleep, sleep_name(muse_settings_sleep_s()));
+    set_text(s_home_lang, lang_name(muse_settings_speech_lang()));
 
     muse_power_t p = muse_state_power();
     char buf[96];
@@ -1332,6 +1378,8 @@ void muse_settings_ui_tick(bool visible)
         tick_sound();
     } else if (s_current == s_sleep) {
         tick_sleep();
+    } else if (s_current == s_lang) {
+        tick_lang();
     } else if (s_current == s_battery) {
         tick_battery();
     }

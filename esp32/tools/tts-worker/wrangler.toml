@@ -1,0 +1,8 @@
+# Deploy with: npx wrangler deploy
+# Then set the shared secret: npx wrangler secret put TTS_SECRET
+name = "muse-tts"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+[ai]
+binding = "AI"

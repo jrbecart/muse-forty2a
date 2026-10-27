@@ -106,6 +106,15 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap);
  */
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap);
 
+/*
+ * The whole reply so far, its messages a blank line apart, into out (cut to
+ * fit cap); returns its length, 0 until there's reply text. It stays until
+ * the next turn begins, so a finished reply can still be read back.
+ */
+size_t muse_hatch_turn_reply(char *out, size_t cap);
+/* Where in that text the speech is after `played` frames of it (a byte offset). */
+size_t muse_hatch_turn_reply_at(size_t played);
+
 /* Reply speech as 16 kHz mono. Waits up to wait_ms for some; returns frames read. */
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);
 

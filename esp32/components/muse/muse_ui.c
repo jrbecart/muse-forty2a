@@ -30,6 +30,7 @@
 #include "mbedtls/base64.h"
 #include "src/draw/lv_image_decoder_private.h"   /* custom decoder */
 #include "src/misc/lv_area_private.h"            /* lv_area_intersect, for the ring */
+#include "src/misc/lv_text_private.h"            /* lv_text_encoded_get_char_id, for the reply */
 
 #include "muse_ble.h"
 #include "muse_board.h"
@@ -56,7 +57,8 @@ static const char *TAG = "muse_ui";
 #define CAPTION_W 256           /* 16 columns of unscii_16, the width reply captions wrap to */
 #define CAPTION_LINE_SPACE 2
 #define ART_BLANK_ROWS 3        /* Muse's art never reaches the grid's bottom rows */
-#define MINI_CELL_PX 2          /* Muse's grid cells over a reply that's read */
+#define READ_CELL_PX 1          /* Muse's grid cells in the corner over a reply */
+#define SCROLLBAR_PX 6          /* beside the reply, for its scrollbar */
 #define ANSWER_MS 300           /* Muse making room for a reply, and back */
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
@@ -108,7 +110,9 @@ static lv_obj_t *s_state_lbl;
 static lv_obj_t *s_name_lbl;    /* this gadget's own name, to tell it from the next one */
 static lv_obj_t *s_power_lbl;
 static lv_obj_t *s_caption_lbl;
-static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
+static lv_obj_t *s_reply_box;   /* full layout: the reply, scrolling, while answering */
+static lv_obj_t *s_reply_lbl;   /* the text in it */
+static lv_obj_t *s_reader_icon; /* paused, or catching up, while scrolled away */
 static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
@@ -145,25 +149,33 @@ static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
 
 /*
- * While Muse is thinking or speaking it shrinks to make room for the reply:
- * a little when the reply is heard, over a few lines to follow along, and
- * to the top when it's only read, over a page.
+ * While Muse is thinking or speaking it shrinks into the top corner opposite
+ * the speaker button, and the reply takes the rest of the screen: as much
+ * text as fits inside the ring, scrolling as the speech goes on.
  */
 typedef struct {
-    int px, y;                /* Muse's size and centre */
-    int cols, lines;          /* the reply's page */
-    int w, h, top;            /* and where it goes */
-    lv_text_align_t align;
+    int px, x, y;             /* Muse's size and centre */
+    int cols, lines;          /* the reply box, in characters */
+    int w, h, top;            /* and in pixels */
     lv_obj_t *hides[4];       /* what it covers */
 } answer_layout_t;
 
-enum { ANSWER_HEARD, ANSWER_READ };
-static answer_layout_t s_answers[2];
-static int s_answer = -1;       /* the layout showing, or -1 */
-static int s_page_for = -1;     /* the layout the reply's page is sized for */
+static answer_layout_t s_answer_layout;
+static bool s_answering;        /* the reply layout is up */
 static int s_big_y;             /* Muse's centre at full size */
-static int s_muse_y;            /* and now */
-static int s_from_px, s_from_y, s_to_px, s_to_y;
+static int s_muse_x, s_muse_y;  /* and now */
+static int s_from_px, s_from_x, s_from_y, s_to_px, s_to_x, s_to_y;
+
+/* Reading the reply: the screen follows the speech unless it's scrolled away. */
+#define FOLLOW_AGAIN_US (30 * 1000000LL)   /* scrolled away and left: back to the speech */
+static char *s_reply_text;      /* MUSE_REPLY_MAX: the reply as shown */
+static uint32_t s_reply_version;
+static bool s_reply_shown;      /* the box holds the reply, not the caption */
+static bool s_following = true;
+static bool s_touching;
+static int64_t s_touch_us;
+static int s_scroll_target = -1;
+static int s_shown_reader = -1;
 
 static const char *const MODE_NAMES[MUSE_MODE_COUNT] = {
     [MUSE_MODE_BOOT] = "WAKING UP",
@@ -550,16 +562,19 @@ static void move_muse_t(void *obj, int32_t t)
 {
     (void)obj;
     set_canvas_px(s_from_px + (s_to_px - s_from_px) * t / 256);
+    s_muse_x = s_from_x + (s_to_x - s_from_x) * t / 256;
     s_muse_y = s_from_y + (s_to_y - s_from_y) * t / 256;
-    lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_muse_y);
+    lv_obj_align(s_canvas, LV_ALIGN_CENTER, s_muse_x, s_muse_y);
 }
 
-/* Eases Muse to `px` centred at `y`, from wherever it is now. */
-static void move_muse(int px, int y)
+/* Eases Muse to `px` centred at (x, y), from wherever it is now. */
+static void move_muse(int px, int x, int y)
 {
     s_from_px = s_muse_src.header.w;
+    s_from_x = s_muse_x;
     s_from_y = s_muse_y;
     s_to_px = px;
+    s_to_x = x;
     s_to_y = y;
     lv_anim_t a;
     lv_anim_init(&a);
@@ -571,32 +586,28 @@ static void move_muse(int px, int y)
     lv_anim_start(&a);
 }
 
-/* Switches to answer layout `which`, or back to the usual one for -1. */
-static void set_answer(int which)
+/* Switches to the reply layout, or back to the usual one. */
+static void set_answer(bool on)
 {
-    const answer_layout_t *was = s_answer >= 0 ? &s_answers[s_answer] : NULL;
-    const answer_layout_t *l = which >= 0 ? &s_answers[which] : NULL;
-    s_answer = which;
-    const size_t n = sizeof(s_answers[0].hides) / sizeof(s_answers[0].hides[0]);
-    for (size_t i = 0; was && i < n; i++) {
-        if (was->hides[i]) {
-            lv_obj_remove_flag(was->hides[i], LV_OBJ_FLAG_HIDDEN);
-        }
-    }
-    for (size_t i = 0; l && i < n; i++) {
+    const answer_layout_t *l = &s_answer_layout;
+    s_answering = on;
+    for (size_t i = 0; i < sizeof(l->hides) / sizeof(l->hides[0]); i++) {
         if (l->hides[i]) {
-            lv_obj_add_flag(l->hides[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_flag(l->hides[i], LV_OBJ_FLAG_HIDDEN, on);
         }
     }
     if (!muse_board->round) {
-        lv_obj_set_flag(s_ring, LV_OBJ_FLAG_HIDDEN, l != NULL);   /* the reply runs past a rectangle's ring */
+        lv_obj_set_flag(s_ring, LV_OBJ_FLAG_HIDDEN, on);   /* the reply runs past a rectangle's ring */
     }
-    if (l) {
-        lv_obj_set_size(s_reply_lbl, l->w, l->h);
-        lv_obj_align(s_reply_lbl, LV_ALIGN_CENTER, 0, l->top + l->h / 2);
-        lv_obj_set_style_text_align(s_reply_lbl, l->align, 0);
+    lv_obj_set_flag(s_reply_box, LV_OBJ_FLAG_HIDDEN, !on);
+    if (!on) {
+        lv_obj_add_flag(s_reader_icon, LV_OBJ_FLAG_HIDDEN);
+        s_shown_reader = -1;
+        s_touching = false;
+        s_following = true;
+        muse_state_set_reader(MUSE_READER_FOLLOW);
     }
-    move_muse(l ? l->px : s_canvas_px, l ? l->y : s_big_y);
+    move_muse(on ? l->px : s_canvas_px, on ? l->x : 0, on ? l->y : s_big_y);
 }
 
 /* Whether a reply `w` px wide fits across the screen `y` px from the centre. */
@@ -621,21 +632,13 @@ static int reply_bottom(int w, int ring_in)
     return bottom;
 }
 
-static void set_reply_box(answer_layout_t *l, int cols, int lines, int top, int cw, int pitch)
-{
-    l->cols = cols;
-    l->lines = lines;
-    l->w = cols * cw;
-    l->h = lines * pitch - CAPTION_LINE_SPACE;
-    l->top = top;
-}
-
-/* The hint icons a layout's reply would cover go while it's up. */
+/* The hint icons the reply layout would cover, with its text or Muse in the corner, go while it's up. */
 static void add_hides(answer_layout_t *l, int n)
 {
-    lv_area_t box = {
-        .x1 = s_w / 2 - l->w / 2, .y1 = s_h / 2 + l->top,
-        .x2 = s_w / 2 + l->w / 2 - 1, .y2 = s_h / 2 + l->top + l->h - 1,
+    /* Muse's art fills about the middle half of its canvas. */
+    lv_area_t areas[] = {
+        { s_w / 2 - l->w / 2, s_h / 2 + l->top, s_w / 2 + l->w / 2 - 1, s_h / 2 + l->top + l->h - 1 },
+        { s_w / 2 + l->x - l->px / 4, s_h / 2 + l->y - l->px / 4, s_w / 2 + l->x + l->px / 4, s_h / 2 + l->y + l->px / 4 },
     };
     lv_obj_t *const hints[] = { s_mic_icon, s_aux_icon };
     for (size_t i = 0; i < 2; i++) {
@@ -644,17 +647,53 @@ static void add_hides(answer_layout_t *l, int n)
         }
         lv_area_t a;
         lv_obj_get_coords(hints[i], &a);
-        if (a.x1 <= box.x2 && a.x2 >= box.x1 && a.y1 <= box.y2 && a.y2 >= box.y1) {
-            l->hides[n++] = hints[i];
+        for (size_t k = 0; k < sizeof(areas) / sizeof(areas[0]); k++) {
+            const lv_area_t *b = &areas[k];
+            if (a.x1 <= b->x2 && a.x2 >= b->x1 && a.y1 <= b->y2 && a.y2 >= b->y1) {
+                l->hides[n++] = hints[i];
+                break;
+            }
         }
     }
 }
 
 /*
- * The answer layouts, both with Muse centred. Heard: Muse a size smaller,
- * where it was if there's room, over three lines at the bottom. Read: Muse
- * small under the status line, and under it and the speaker button the
- * biggest page of reply text that fits inside the ring.
+ * Reading a reply by touch. A finger down holds the speech; scrolling away
+ * from it stops the screen following (scrolled back, the speech waits;
+ * ahead, it hurries after). A tap goes back to the speech, or once the
+ * reply is over closes it.
+ */
+static void on_reply_event(lv_event_t *e)
+{
+    s_touch_us = esp_timer_get_time();
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_PRESSED:
+        s_touching = true;
+        break;
+    case LV_EVENT_SCROLL_BEGIN:
+        if (s_touching) {
+            s_following = false;   /* the finger took over */
+            s_scroll_target = -1;
+        }
+        break;
+    case LV_EVENT_SHORT_CLICKED:
+        s_following = true;
+        muse_state_reader_tap();
+        break;
+    case LV_EVENT_RELEASED:
+    case LV_EVENT_PRESS_LOST:
+        s_touching = false;
+        break;
+    default:
+        break;
+    }
+}
+
+/*
+ * The reply layout. Muse goes small into the top corner opposite the speaker
+ * button; under them both, the biggest box of reply text that fits inside
+ * the ring. A round screen narrows towards the bottom, so the widest box
+ * isn't the biggest.
  */
 static void build_answer(lv_obj_t *face, int ring_in)
 {
@@ -669,65 +708,73 @@ static void build_answer(lv_obj_t *face, int ring_in)
     int cw = lv_font_get_glyph_width(font, 'M', ' ');
     int pitch = lv_font_get_line_height(font) + CAPTION_LINE_SPACE;
 
-    answer_layout_t *l = &s_answers[ANSWER_HEARD];
-    int cell = s_canvas_px / MUSE_PX_W - 1;
-    cell = cell > MINI_CELL_PX ? cell : MINI_CELL_PX;
-    l->px = MUSE_PX_W * cell;
-    l->y = s_big_y;
-    l->align = LV_TEXT_ALIGN_CENTER;
-    int h = 3 * pitch - CAPTION_LINE_SPACE;
-    int art_bottom = l->y + l->px / 2 - ART_BLANK_ROWS * cell;
-    set_reply_box(l, CAPTION_W / cw, 3, reply_bottom(CAPTION_W, ring_in) - h, cw, pitch);
-    for (int c = 24; c > l->cols; c--) {   /* wider if it still clears Muse */
-        int top = reply_bottom(c * cw, ring_in) - h;
-        if (top >= art_bottom + 6 && fits_across(c * cw, top, ring_in)) {
-            set_reply_box(l, c, 3, top, cw, pitch);
-            break;
-        }
-    }
-    if (l->top < art_bottom + 6) {
-        l->y -= art_bottom + 6 - l->top;   /* no room under Muse: it moves up */
-    }
-
-    l = &s_answers[ANSWER_READ];
-    int status_bottom = 20 + s_dy + 16 - s_h / 2;
-    l->px = MUSE_PX_W * MINI_CELL_PX;
-    l->y = status_bottom + 2 + l->px / 2;   /* its sparkles clear of the status line */
-    l->align = LV_TEXT_ALIGN_LEFT;
-    art_bottom = l->y + l->px / 2 - ART_BLANK_ROWS * MINI_CELL_PX;
-    int top = (art_bottom > spk_y + spk_r ? art_bottom : spk_y + spk_r) + 8;
-    set_reply_box(l, 16, 2, top, cw, pitch);
-    /* The widest page isn't the biggest: a round screen narrows towards the bottom. */
-    for (int c = 12; c <= 24 && fits_across(c * cw, top, ring_in); c++) {
-        int n = (reply_bottom(c * cw, ring_in) - top + CAPTION_LINE_SPACE) / pitch;
-        /* A third of the caption spare for characters wider than a byte. */
-        while ((c + 1) * n > MUSE_CAPTION_MAX * 2 / 3) {
-            n--;
-        }
+    answer_layout_t *l = &s_answer_layout;
+    l->px = MUSE_PX_W * READ_CELL_PX;
+    l->x = -spk_x;
+    l->y = spk_y;
+    int top = spk_y + (spk_r > l->px / 2 ? spk_r : l->px / 2) + 4;
+    l->cols = 12;
+    l->lines = 2;
+    for (int c = 12; c <= 26 && fits_across(c * cw + SCROLLBAR_PX, top, ring_in); c++) {
+        int n = (reply_bottom(c * cw + SCROLLBAR_PX, ring_in) - top) / pitch;
         if (c * n > l->cols * l->lines) {
-            set_reply_box(l, c, n, top, cw, pitch);
+            l->cols = c;
+            l->lines = n;
         }
     }
-    ESP_LOGI(TAG, "reply pages: %d x %d heard, %d x %d read", s_answers[ANSWER_HEARD].cols,
-             s_answers[ANSWER_HEARD].lines, l->cols, l->lines);
+    l->w = l->cols * cw;
+    l->h = l->lines * pitch;
+    l->top = top;
+    /* Pages of caption, for whatever's shown before the reply's own text. */
+    int page_lines = l->lines;
+    while (l->cols * page_lines > MUSE_CAPTION_MAX * 2 / 3) {
+        page_lines--;   /* a third spare for characters wider than a byte */
+    }
+    muse_state_set_page(l->cols, page_lines);
+    ESP_LOGI(TAG, "reply box: %d x %d characters", l->cols, l->lines);
 
-    s_reply_lbl = make_label(face, font, COLOR_CAPTION);
+    s_reply_text = heap_caps_malloc(MUSE_REPLY_MAX, MUSE_BIG_CAPS);
+    if (s_reply_text) {
+        s_reply_text[0] = '\0';
+    }
+    s_reply_box = lv_obj_create(face);
+    lv_obj_remove_style_all(s_reply_box);
+    lv_obj_set_size(s_reply_box, l->w + SCROLLBAR_PX, l->h);
+    lv_obj_align(s_reply_box, LV_ALIGN_CENTER, SCROLLBAR_PX / 2, l->top + l->h / 2);
+    lv_obj_set_scroll_dir(s_reply_box, LV_DIR_VER);
+    lv_obj_set_scrollbar_mode(s_reply_box, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(s_reply_box, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_radius(s_reply_box, 2, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(s_reply_box, lv_color_hex(COLOR_ACCENT), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(s_reply_box, LV_OPA_70, LV_PART_SCROLLBAR);
+    lv_obj_set_style_pad_right(s_reply_box, 0, LV_PART_SCROLLBAR);
+    lv_obj_add_flag(s_reply_box, LV_OBJ_FLAG_HIDDEN);
+    static const lv_event_code_t EVENTS[] = { LV_EVENT_PRESSED, LV_EVENT_SCROLL_BEGIN, LV_EVENT_SHORT_CLICKED,
+                                              LV_EVENT_RELEASED, LV_EVENT_PRESS_LOST };
+    for (size_t i = 0; i < sizeof(EVENTS) / sizeof(EVENTS[0]); i++) {
+        lv_obj_add_event_cb(s_reply_box, on_reply_event, EVENTS[i], NULL);
+    }
+
+    s_reply_lbl = make_label(s_reply_box, font, COLOR_CAPTION);
+    lv_obj_set_width(s_reply_lbl, l->w);
     lv_obj_set_style_text_line_space(s_reply_lbl, CAPTION_LINE_SPACE, 0);
-    /* Pages come wrapped to fit; the transcript while thinking doesn't. */
     lv_label_set_long_mode(s_reply_lbl, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_remove_flag(s_reply_lbl, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
+
+    /* Between the speaker button and Muse: paused, or catching up. */
+    s_reader_icon = make_label(face, &lv_font_montserrat_14, COLOR_DIM);
+    lv_obj_align(s_reader_icon, LV_ALIGN_CENTER, 0, spk_y);
+    lv_obj_add_flag(s_reader_icon, LV_OBJ_FLAG_HIDDEN);
 
     if (muse_board->touch) {
         build_speaker(face, spk_x, spk_y);
     }
 
-    /* Out of the way while a page is up: the mode name, where Muse was. */
+    /* Out of the way while the reply is up: the mode name, where Muse was. */
     lv_obj_update_layout(face);
-    s_answers[ANSWER_READ].hides[0] = s_state_lbl;
-    s_answers[ANSWER_READ].hides[1] = s_name_lbl;   /* the reply takes the top too */
-    add_hides(&s_answers[ANSWER_READ], 2);
-    add_hides(&s_answers[ANSWER_HEARD], 0);
+    l->hides[0] = s_state_lbl;
+    l->hides[1] = s_name_lbl;
+    add_hides(l, 2);
 }
 
 /*
@@ -1235,7 +1282,7 @@ static void update_chrome(float now)
     }
     /* Unpaired, a press only says "SET UP MUSE FIRST", so the mic goes too.
      * While a reply's layout is up it decides; that's only ever paired. */
-    if (s_answer < 0 && paired == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
+    if (!s_answering && paired == lv_obj_has_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN)) {
         lv_obj_set_flag(s_mic_icon, LV_OBJ_FLAG_HIDDEN, !paired);
     }
 }
@@ -1289,6 +1336,70 @@ static void update_power(float now)
     }
     if (strcmp(buf, lv_label_get_text(s_power_lbl)) != 0) {
         lv_label_set_text(s_power_lbl, buf);
+    }
+}
+
+/* Scrolls the reply box to y, unless it's already headed there. */
+static void scroll_reply(int y)
+{
+    if (y != s_scroll_target) {
+        s_scroll_target = y;
+        lv_obj_scroll_to_y(s_reply_box, y, LV_ANIM_ON);
+    }
+}
+
+/*
+ * The reply box while answering: the caption until there's reply text, then
+ * the reply, kept in step with the speech. The line being said stays in view,
+ * a new screenful starting with it as it nears the bottom, so the text sits
+ * still to be read. Scrolled away from it, the speech waits or hurries.
+ */
+static void update_reply(bool caption_fresh, const char *caption)
+{
+    size_t at = 0;
+    bool changed = s_reply_text && muse_state_reply(s_reply_text, MUSE_REPLY_MAX, &at, &s_reply_version);
+    bool has = s_reply_text && s_reply_text[0];
+    if (changed || has != s_reply_shown || (!has && caption_fresh)) {
+        lv_label_set_text(s_reply_lbl, has ? s_reply_text : caption);
+        lv_obj_set_flag(s_reply_box, LV_OBJ_FLAG_HIDDEN, !has && !caption[0]);
+        if (has != s_reply_shown) {
+            s_reply_shown = has;
+            s_following = true;
+            s_scroll_target = -1;
+            lv_obj_scroll_to_y(s_reply_box, 0, LV_ANIM_OFF);
+        }
+        lv_obj_update_layout(s_reply_box);
+    }
+    muse_reader_t reader = MUSE_READER_FOLLOW;
+    if (has) {
+        int pitch = lv_font_get_line_height(&lv_font_unscii_16) + CAPTION_LINE_SPACE;
+        int box_h = lv_obj_get_height(s_reply_box);
+        int max_y = lv_obj_get_height(s_reply_lbl) - box_h;
+        max_y = max_y > 0 ? max_y : 0;
+        lv_point_t live;
+        lv_label_get_letter_pos(s_reply_lbl, lv_text_encoded_get_char_id(s_reply_text, at), &live);
+        int y = lv_obj_get_scroll_y(s_reply_box);
+        bool in_view = live.y >= y && live.y + pitch <= y + box_h;
+        if (!s_following && !s_touching && !lv_obj_is_scrolling(s_reply_box)
+            && (in_view || esp_timer_get_time() - s_touch_us > FOLLOW_AGAIN_US)) {
+            s_following = true;
+            s_scroll_target = -1;
+        }
+        if (s_touching) {
+            reader = MUSE_READER_WAIT;
+        } else if (!s_following) {
+            reader = live.y < y ? MUSE_READER_SKIP : MUSE_READER_WAIT;
+        }
+        if (s_following && !s_touching && (live.y < y || live.y + 2 * pitch > y + box_h)) {
+            int to = live.y - pitch;   /* the line before for context */
+            scroll_reply(to < 0 ? 0 : to > max_y ? max_y : to);
+        }
+    }
+    muse_state_set_reader(reader);
+    if ((int)reader != s_shown_reader) {
+        s_shown_reader = reader;
+        lv_label_set_text(s_reader_icon, reader == MUSE_READER_SKIP ? LV_SYMBOL_NEXT : LV_SYMBOL_PAUSE);
+        lv_obj_set_flag(s_reader_icon, LV_OBJ_FLAG_HIDDEN, reader == MUSE_READER_FOLLOW);
     }
 }
 
@@ -1365,29 +1476,19 @@ static void update_status(muse_mode_t mode, float now)
 
     static char caption[MUSE_CAPTION_MAX];
     bool fresh = muse_state_caption(caption, sizeof(caption), &s_caption_version);
-    int answer = -1;
-    if (s_reply_lbl) {
-        /* The speaker picks the layout, even mid-reply: the voice task pages to fit. */
-        int layout = muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
-        if (layout != s_page_for) {
-            muse_state_set_page(s_answers[layout].cols, s_answers[layout].lines);
-            s_page_for = layout;
-        }
-        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
-            answer = layout;
-        }
-    }
-    if (answer != s_answer) {
+    bool answer = s_reply_box && (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING);
+    if (answer != s_answering) {
         set_answer(answer);
         fresh = true;   /* the caption moves between labels */
     }
-    if (fresh) {
-        lv_obj_t *lbl = answer >= 0 ? s_reply_lbl : s_caption_lbl;
-        lv_label_set_text(lbl, caption);
-        lv_obj_set_flag(lbl, LV_OBJ_FLAG_HIDDEN, !caption[0]);
-        if (s_reply_lbl) {
-            lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
-        }
+    if (answer) {
+        update_reply(fresh, caption);
+    } else if (fresh) {
+        lv_label_set_text(s_caption_lbl, caption);
+        lv_obj_set_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN, !caption[0]);
+    }
+    if (s_reply_box && fresh) {
+        lv_obj_set_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN, answer || !caption[0]);
     }
     update_power(now);
 }

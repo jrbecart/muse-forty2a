@@ -129,9 +129,85 @@ menu "Muse"
         help
             Push-to-talk turns go over a voice session of Muse's own, to the
             VM Home Link is paired with or one set up on the device with a
-            device token. Replies are text, shown as captions; start_tts in
-            muse_chat_session.cpp is where a TTS API of your own can speak
-            them. Needs PSRAM. Without it, voice notes go over Home Link's own
-            session to its paired VM and replies are shown as text.
+            device token. Replies are text, shown as captions, and spoken with
+            the speaker on if a TTS service is set below. Needs PSRAM. Without
+            it, voice notes go over Home Link's own session to its paired VM
+            and replies are shown as text.
+
+    choice MUSE_TTS
+        prompt "Spoken replies (TTS)"
+        depends on MUSE_HATCH
+        default MUSE_TTS_NONE
+        help
+            Muse replies in text. With a TTS service here and the speaker on,
+            each reply message is sent to it and the MP3 it returns is played,
+            the text on screen following the speech. If the service fails, the
+            reply is shown at reading pace instead.
+
+        config MUSE_TTS_NONE
+            bool "None: replies are shown, not spoken"
+
+        config MUSE_TTS_DEEPGRAM
+            bool "Deepgram Aura (cloud API key)"
+            help
+                Deepgram's text to speech (api.deepgram.com/v1/speak). Needs an
+                API key from console.deepgram.com; new accounts come with free
+                credit.
+
+        config MUSE_TTS_OPENAI
+            bool "OpenAI-compatible server (Kokoro-FastAPI, OpenAI, ...)"
+            help
+                Any server with OpenAI's POST /v1/audio/speech: your own free
+                one, such as Kokoro-FastAPI on a small VPS or a computer at
+                home, or OpenAI's (with an API key).
+    endchoice
+
+    config MUSE_TTS_DEEPGRAM_KEY
+        string "Deepgram API key"
+        depends on MUSE_TTS_DEEPGRAM
+        default ""
+        help
+            Kept in the build's sdkconfig, like the SDK token: never commit it.
+
+    config MUSE_TTS_DEEPGRAM_MODEL
+        string "Deepgram voice"
+        depends on MUSE_TTS_DEEPGRAM
+        default "aura-2-thalia-en"
+        help
+            A voice from developers.deepgram.com/docs/tts-models, for example
+            aura-2-thalia-en or aura-2-andromeda-en.
+
+    config MUSE_TTS_URL
+        string "Speech endpoint URL"
+        depends on MUSE_TTS_OPENAI
+        default "http://tts.local:8880/v1/audio/speech"
+        help
+            The full URL of the speech endpoint (tts.local stands for your
+            server's name or address). Kokoro-FastAPI listens on port 8880;
+            OpenAI's is https://api.openai.com/v1/audio/speech. Use https for
+            anything reached over the internet.
+
+    config MUSE_TTS_API_KEY
+        string "API key (sent as a Bearer token; empty for none)"
+        depends on MUSE_TTS_OPENAI
+        default ""
+
+    config MUSE_TTS_MODEL
+        string "Model"
+        depends on MUSE_TTS_OPENAI
+        default "kokoro"
+        help
+            "kokoro" for Kokoro-FastAPI; "tts-1" or "gpt-4o-mini-tts" for OpenAI.
+
+    config MUSE_TTS_VOICE
+        string "Voice"
+        depends on MUSE_TTS_OPENAI
+        default "af_heart"
+        help
+            Kokoro voices include af_heart, af_bella, bf_emma and, in French,
+            ff_siwis; OpenAI's include alloy and nova. "auto" is for the
+            Cloudflare Worker in tools/tts-worker: it tells each sentence's
+            language, and the board's Settings > Language picks the one used
+            when a sentence is too short to tell.
 
 endmenu

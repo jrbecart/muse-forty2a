@@ -20,7 +20,9 @@
 #include "src/drivers/sdl/lv_sdl_mouse.h"
 #include "src/drivers/sdl/lv_sdl_window.h"
 
-#define WATCHER_RESOLUTION 412
+#ifndef WATCHER_RESOLUTION
+#define WATCHER_RESOLUTION 412   /* -DWATCHER_RESOLUTION=360 previews the 1.85C */
+#endif
 
 static lv_display_t *s_display;
 

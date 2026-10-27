@@ -45,6 +45,7 @@ typedef enum {
     MUSE_SETTING_WIFI,          /* on/off or credentials */
     MUSE_SETTING_BLE,
     MUSE_SETTING_HATCH,
+    MUSE_SETTING_LANGUAGE,
 } muse_setting_t;
 
 typedef void (*muse_setting_cb_t)(muse_setting_t what);
@@ -59,6 +60,9 @@ int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
 bool muse_settings_wifi_on(void);
 bool muse_settings_ble_on(void);
+/* The language replies are spoken in when a sentence is too short to tell
+ * ("en", "fr" or "es"; muse_tts's "auto" voice). */
+const char *muse_settings_speech_lang(void);
 
 void muse_settings_wifi(char ssid[MUSE_SSID_MAX + 1], char pass[MUSE_PASS_MAX + 1]);
 void muse_settings_hatch_host(char out[MUSE_HOST_MAX + 1]);
@@ -73,6 +77,7 @@ void muse_settings_set_brightness(int pct);
 void muse_settings_set_sleep_s(int secs);
 void muse_settings_set_wifi_on(bool on);
 void muse_settings_set_ble_on(bool on);
+void muse_settings_set_speech_lang(const char *lang);
 /* A network name is remembered first among the saved ones and joined now;
  * an empty ssid forgets every saved network. */
 void muse_settings_set_wifi(const char *ssid, const char *pass);

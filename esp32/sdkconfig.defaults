@@ -116,6 +116,9 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 # TLS: root CA bundle for HTTPS / WSS / OTA.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Hosts whose chain ends in a cross-signed root, as Cloudflare's *.workers.dev
+# (GTS Root R4 signed by GlobalSign Root CA, which the bundle no longer has).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 
 # TLS record sizes. Outbound was 4 KB but each TLS record carries
 # encrypt/MAC/header overhead — 16 KB records cut that overhead 4x.

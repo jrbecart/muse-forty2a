@@ -91,6 +91,11 @@ bool muse_settings_speaker_on(void) {
     return true;
 }
 
+// No settings screen: spoken replies fall back to English.
+const char *muse_settings_speech_lang(void) {
+    return "en";
+}
+
 // No screen either, so reply text is never shown; Muse's default page.
 void muse_state_page(int *cols, int *lines) {
     *cols = 16;
