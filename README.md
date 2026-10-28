@@ -72,6 +72,49 @@ Muse only answers gadgets in text, so this port speaks the replies itself:
 The text on screen follows the voice. Hold a finger on it to pause, scroll
 back to reread (the voice waits for you), or tap to jump back to where it is.
 
+### Set up free TTS on Cloudflare (about 10 minutes)
+
+1. **Create a free Cloudflare account** at [dash.cloudflare.com](https://dash.cloudflare.com)
+   (no credit card).
+2. **Create the Worker:** Compute (Workers) > Create > Start with Hello
+   World, name it `muse-tts`, Deploy. Then Edit code, replace everything with
+   [`esp32/tools/tts-worker/worker.js`](esp32/tools/tts-worker/worker.js),
+   and Deploy again.
+3. **Give it Workers AI:** Settings > Bindings > Add > Workers AI, variable
+   name `AI`. No database or other binding is needed.
+4. **Add a secret** so only your gadget can use it: Settings > Variables and
+   Secrets > Add, type Secret, name `TTS_SECRET`, value a long random string
+   (`openssl rand -hex 24` makes one).
+5. **Check it** from a computer (your Worker's address is shown at the top of
+   its page):
+
+   ```sh
+   curl https://muse-tts.<your-subdomain>.workers.dev/v1/audio/speech \
+     -H "Authorization: Bearer <secret>" -H "Content-Type: application/json" \
+     -d '{"input":"Bonjour de Muse.","voice":"auto"}' -o hello.wav
+   ```
+
+   `hello.wav` should say "Bonjour de Muse".
+6. **Point the firmware at it:** add these lines to your build directory's
+   `sdkconfig` (or set them in `idf.py menuconfig`, Muse > Spoken replies),
+   then build and flash:
+
+   ```
+   CONFIG_MUSE_TTS_OPENAI=y
+   CONFIG_MUSE_TTS_URL="https://muse-tts.<your-subdomain>.workers.dev/v1/audio/speech"
+   CONFIG_MUSE_TTS_API_KEY="<secret>"
+   CONFIG_MUSE_TTS_MODEL="melotts"
+   CONFIG_MUSE_TTS_VOICE="auto"
+   ```
+
+   The secret ends up in the firmware like the SDK token, so keep `sdkconfig`
+   out of git.
+7. **On the gadget:** keep the speaker on (hold the speaker button to
+   toggle), and pick your usual language in Settings > Language.
+
+More options (Deepgram Aura voices, how the free allowance is counted) are
+in [`esp32/tools/tts-worker/README.md`](esp32/tools/tts-worker/README.md).
+
 Build and flash it from `esp32/` with ESP-IDF v6.0.1:
 
 ```sh

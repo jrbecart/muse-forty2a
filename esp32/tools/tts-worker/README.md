@@ -34,7 +34,8 @@ Either way, you end up with a URL like
 1. Sign up at dash.cloudflare.com, then Compute (Workers) > Create > Start
    with Hello World. Name it `muse-tts` and deploy.
 2. Edit code: replace everything with `worker.js`, then Deploy.
-3. Settings > Bindings > Add > Workers AI, variable name `AI`.
+3. Settings > Bindings > Add > Workers AI, variable name `AI`. That's the
+   only binding it needs: no D1 database, KV or R2.
 4. Settings > Variables and Secrets > Add, type Secret, name `TTS_SECRET`,
    value a long random string (`openssl rand -hex 24` makes one).
 
@@ -51,10 +52,10 @@ Check it from a computer before building:
 ```sh
 curl -sS https://muse-tts.<your-subdomain>.workers.dev/v1/audio/speech \
   -H "Authorization: Bearer <secret>" -H "Content-Type: application/json" \
-  -d '{"input":"Hello from Muse.","voice":"en"}' -o hello.mp3
+  -d '{"input":"Bonjour de Muse.","voice":"auto"}' -o hello.wav
 ```
 
-`hello.mp3` should play.
+`hello.wav` should play (MeloTTS answers in WAV, Aura voices in MP3).
 
 ## Point the gadget at it
 
