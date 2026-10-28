@@ -40,8 +40,9 @@ This is a fork of Meta's
 adds the Waveshare ESP32-S3-Touch-LCD-1.85C, a round 1.85" 360×360 touch
 screen with a speaker, mic and battery, as a full Muse gadget:
 
-- **Free spoken replies (TTS) in English, Spanish and French!** Muse answers
-  out loud through the board's speaker
+- **Free spoken replies (TTS) in English, Spanish and French, with the
+  language recognized automatically!** Muse answers out loud through the
+  board's speaker
 - Avatar UI, touch settings and push-to-talk on the BOOT button
 - Runs on its own battery, with the level on screen, screen sleep and deep-sleep power off
 - Both hardware revisions, detected at boot: V1 (PCM5101 DAC + I2S mic) and V2 (ES8311 + ES7210)
@@ -56,9 +57,11 @@ Muse only answers gadgets in text, so this port speaks the replies itself:
   ([`esp32/tools/tts-worker`](esp32/tools/tts-worker/README.md)) runs MeloTTS
   on Cloudflare's free Workers AI plan, no credit card needed, with hours of
   speech a day included.
-- **English, Spanish and French:** the language of each sentence is detected
-  on the fly, so Muse sounds French when it answers in French. Settings >
-  Language picks the one used when a sentence is too short to tell.
+- **English, Spanish and French, recognized automatically:** the language of
+  each sentence is detected on the fly, so Muse sounds French when it
+  answers in French and Spanish when it answers in Spanish, with nothing to
+  switch. Settings > Language is only the fallback, for a sentence too short
+  to tell (like "Merci !").
 - **Fast:** the board doesn't wait for the whole reply. It sends each
   sentence for speech as soon as Muse has written it and fetches the next
   ones while one plays. In our tests a sentence's speech comes back in 0.6
@@ -110,7 +113,9 @@ back to reread (the voice waits for you), or tap to jump back to where it is.
    The secret ends up in the firmware like the SDK token, so keep `sdkconfig`
    out of git.
 7. **On the gadget:** keep the speaker on (hold the speaker button to
-   toggle), and pick your usual language in Settings > Language.
+   toggle). The language is recognized automatically; Settings > Language
+   only sets the fallback for very short sentences, so pick the one you use
+   most.
 
 More options (Deepgram Aura voices, how the free allowance is counted) are
 in [`esp32/tools/tts-worker/README.md`](esp32/tools/tts-worker/README.md).
