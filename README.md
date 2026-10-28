@@ -40,13 +40,37 @@ This is a fork of Meta's
 adds the Waveshare ESP32-S3-Touch-LCD-1.85C, a round 1.85" 360×360 touch
 screen with a speaker, mic and battery, as a full Muse gadget:
 
+- **Free spoken replies (TTS) in English, Spanish and French!** Muse answers
+  out loud through the board's speaker
 - Avatar UI, touch settings and push-to-talk on the BOOT button
 - Runs on its own battery, with the level on screen, screen sleep and deep-sleep power off
 - Both hardware revisions, detected at boot: V1 (PCM5101 DAC + I2S mic) and V2 (ES8311 + ES7210)
-- Replies from Muse fill the screen as scrolling text you can hold, scroll back
-  and catch up on by touch
-- Spoken replies (TTS) with Deepgram or a free self-hosted Kokoro server: see
-  [`esp32/README.md`](esp32/README.md#spoken-replies-tts)
+- Replies fill the screen as scrolling text you can hold, scroll back and
+  catch up on by touch
+
+### Free and fast spoken replies
+
+Muse only answers gadgets in text, so this port speaks the replies itself:
+
+- **Free:** a small Cloudflare Worker
+  ([`esp32/tools/tts-worker`](esp32/tools/tts-worker/README.md)) runs MeloTTS
+  on Cloudflare's free Workers AI plan, no credit card needed, with hours of
+  speech a day included.
+- **English, Spanish and French:** the language of each sentence is detected
+  on the fly, so Muse sounds French when it answers in French. Settings >
+  Language picks the one used when a sentence is too short to tell.
+- **Fast:** the board doesn't wait for the whole reply. It sends each
+  sentence for speech as soon as Muse has written it and fetches the next
+  ones while one plays. In our tests a sentence's speech comes back in 0.6
+  to 1.2 s, and a long reply streams about 8 times faster than it plays, so
+  there are no gaps.
+- **Your choice of service:** the same firmware also speaks with Deepgram
+  Aura, OpenAI, or a Kokoro or Piper server of your own (OpenAI-style
+  `/v1/audio/speech`). Setup is in
+  [`esp32/README.md`](esp32/README.md#spoken-replies-tts).
+
+The text on screen follows the voice. Hold a finger on it to pause, scroll
+back to reread (the voice waits for you), or tap to jump back to where it is.
 
 Build and flash it from `esp32/` with ESP-IDF v6.0.1:
 
