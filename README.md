@@ -14,21 +14,26 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
-# Muse Gadgets: forty2a edition
-
 <p align="center">
-  <a href="https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm">
-    <img src="https://www.waveshare.com/media/catalog/product/cache/1/image/560x560/9df78eab33525d08d6e5fb8d27136e95/e/s/esp32-s3-touch-lcd-1.85c-1.jpg" width="320" alt="Waveshare ESP32-S3-Touch-LCD-1.85C, a round 1.85 inch touch screen">
-  </a>
-  <br>
-  <sub>Waveshare ESP32-S3-Touch-LCD-1.85C. Photo: <a href="https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm">Waveshare</a></sub>
+  <img src=".github/images/forty2a-banner.png" width="900" alt="Muse Gadgets, forty2a edition: a round, battery-powered Muse that talks back, with free spoken replies in English, French and Spanish">
 </p>
 
 <p align="center">
-  <img src=".github/images/forty2a-lcd-185c-idle.png" width="300" alt="Muse running on the 1.85C: the avatar idle, ready for push-to-talk">
-  <img src=".github/images/forty2a-lcd-185c-happy.png" width="300" alt="Muse running on the 1.85C: the avatar happy after a tap">
+  <img src="https://img.shields.io/badge/spoken%20replies-free-22c55e" alt="Spoken replies: free">
+  <img src="https://img.shields.io/badge/voices-EN%20%7C%20FR%20%7C%20ES-a77dff" alt="Voices: English, French, Spanish">
+  <img src="https://img.shields.io/badge/board-Waveshare%20ESP32--S3%201.85C-0ea5e9" alt="Board: Waveshare ESP32-S3-Touch-LCD-1.85C">
+  <img src="https://img.shields.io/badge/ESP--IDF-v6.0.1-e7352c" alt="ESP-IDF v6.0.1">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
+</p>
+
+<p align="center">
+  <a href="https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm">
+    <img src="https://www.waveshare.com/media/catalog/product/cache/1/image/560x560/9df78eab33525d08d6e5fb8d27136e95/e/s/esp32-s3-touch-lcd-1.85c-4.jpg" width="300" alt="Waveshare ESP32-S3-Touch-LCD-1.85C, a round 1.85 inch touch screen, seen from the side">
+  </a>
+  <img src=".github/images/forty2a-lcd-185c-idle.png" width="260" alt="Muse running on the 1.85C: the avatar idle, ready for push-to-talk">
+  <img src=".github/images/forty2a-lcd-185c-happy.png" width="260" alt="Muse running on the 1.85C: the avatar happy after a tap">
   <br>
-  <sub>Screenshots taken from the board's own screen: Muse ready, and happy after a tap.</sub>
+  <sub>The Waveshare ESP32-S3-Touch-LCD-1.85C (photo: <a href="https://www.waveshare.com/esp32-s3-touch-lcd-1.85c.htm">Waveshare</a>), and screenshots from its own screen: Muse ready, and happy after a tap.</sub>
 </p>
 
 > **The first autonomous (battery-powered) Muse gadget port for the
